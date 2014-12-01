@@ -1,0 +1,3652 @@
+QA-Automation
+=============
+
+This code is for initiating automatic QA reports for a group of csv files.
+
+
+#!/usr/bin/python
+# Filename : qa_backend_automation.py
+
+from __future__ import division
+import os
+import sys
+import math
+import time
+
+from datetime import datetime
+import numpy as np
+import re
+
+import xlsxwriter
+import argparse
+
+dlm = '|'
+
+# Alias for all input files
+objWtDates = 'objWtDatesAggr2.csv'
+posMaster = 'posMasterAggr5.csv'
+objObjects = 'objObjectsFreshRet3.csv'
+posStAllocations = 'posSTAllocationsAggr2.csv'
+posStAssetClassOverview = 'posSTAssetClassOverviewAggr2.csv'
+posStAttribution = 'posSTAttributionAggr2.csv'
+posStAttributionIntegrated = 'posSTAttributionIntegratedAggr2.csv'
+posStContribution = 'posSTContributionAggr3.csv'
+posStDecileCharts = 'posSTDecileChartsAggr2.csv'
+posStHistorical = 'posSTHistoricalAggr2.csv'
+posStLookback = 'posSTLookbackAggr2.csv'
+posStPortSummaryOverview = 'posSTPortSummaryOverviewAggr2.csv'
+posStPortSummaryCharts = 'posSTPortSummaryChartsAggr3.csv'
+posStOffsetOverlapManagers = 'posSTOffsetOverlapManagersAggr2.csv'
+posStOffsetOverlapOverlap = 'posSTOffsetOverlapOverlapAggr2.csv'
+posStOffsetOverlapProxies = 'posSTOffsetOverlapProxiesAggr2.csv'
+posStOffsetOverlapSummary = 'posSTOffsetOverlapSummaryAggr2.csv'
+posStOffsetOverlapTickers = 'posSTOffsetOverlapTickersAggr2.csv'
+posSTPortSummaryTopStocks = 'posSTPortSummaryTopStocksAggr2.csv'
+posSTVaR = 'posSTVaRAggr2.csv'
+posSTScenarios = 'posSTScenariosFresh3.csv'
+posStLookbackHistorical = 'posStLookbackHistoricalAggr2.csv'
+retMaster = 'retMasterAggr12.csv'
+retStMarketsImpliedCorr = 'retSTMarketsImpliedCorrFresh1.csv'
+retStMarketsRelDispersion = 'retSTMarketsRelDispersionFresh1.csv'
+retStReturnsAvgCorrVol = 'retSTReturnsAvgCorrVolAggr2.csv'
+retStReturnsStressCorr = 'retStReturnsStressCorrAggr2.csv'
+retStReturnsStats = 'retStReturnsStatsAggr2.csv'
+retStReturnsBetasCorrelations = 'retStReturnsBetasCorrelationsAggr2.csv'
+retStReturnsVolatility = 'retSTReturnsVolatilityAggr2.csv'
+retStReturnsGrowth = 'retStReturnsGrowthAggr2.csv'
+retStReturnsMeanVar = 'retStReturnsMeanVarAggr2.csv'
+retStReturnsPrinComp = 'retStReturnsPrinCompAggr2.csv'
+retStReturnsRolling = 'retStReturnsRollingAggr2.csv'
+
+# from openpyxl.reader.excel import load_workbook
+# from openpyxl.workbook import Workbook
+# from openpyxl.style import Color, Fill, Border, Borders
+# from openpyxl.cell import Cell
+# from openpyxl.style import Style
+# from openpyxl.cell import get_column_letter
+
+def readFile(file) :
+    try :
+        f = open(file, 'r')
+        try :
+            for line in f :
+                yield line
+        except IOError :
+            print >> sys.stderr, 'cannot read file : ' + str(file)
+        finally :
+            f.close()
+    except IOError, e :
+        print >> sys.stderr, 'cannot open file : ' + str(e) + file
+
+def convertFloat(num):
+    try:
+        return float(num)
+    except:
+        return None
+
+def convertLong(num):
+    try:
+        return long(num)
+    except:
+        return None
+
+def convertString(num):
+    try:
+        return string(num)
+    except:
+        return None
+
+#Use numeric type to add or calculate list
+class Numeric(object):
+
+    def __init__(self, tp = True):
+        self.miss = 0
+        self.valid = []
+        self.t = tp
+
+    def add(self, num):
+        if self.t:
+            n = convertFloat(num)
+        else:
+            n = convertLong(num)
+        if n is None:
+            self.miss += 1
+        else:
+            self.valid.append(n)
+
+    def avg(self):
+        if len(self.valid) > 0:
+            return sum(self.valid) / len(self.valid)
+        else:
+            return 'NA'
+
+    def max(self):
+        if len(self.valid) > 0:
+            return max(self.valid)
+        else:
+            return 'NA'
+
+    def min(self):
+        if len(self.valid) > 0:
+            return min(self.valid)
+        else:
+            return 'NA'
+
+    def percentile(self, percentile):
+        if len(self.valid) >0:
+            element_idx = int(len(self.valid) * (percentile / 100.0))
+            self.valid.sort()
+            return self.valid[element_idx]
+        else:
+            return 'NA'
+
+    def standev(self):
+        if len(self.valid) >0:
+            mean = sum(self.valid) / len(self.valid)
+            d = [(num - mean) ** 2 for num in self.valid]
+            return  math.sqrt(sum(d) / len(d))
+        else:
+            return 'NA'
+
+    def out(self):
+        return [self.miss, self.max(), self.min(), self.avg(), self.percentile(1), self.percentile(5), self.percentile(95), self.percentile(99), self.standev()]
+
+class QA(object):
+
+    def __init__(self, argv):
+
+        self.argv = argv
+
+        rptFile = ''.join(['AssetCommander_Backend_QA_Report_', datetime.now().strftime('%Y%m%d%H%M%S') ,'.xlsx'])
+        self.wb = xlsxwriter.Workbook(rptFile)
+
+#        self.wb = Workbook()
+
+        self.iDir = None
+        self.oDir = None
+        self.bDt = None
+        self.eDt = None
+        self.bgDateId = None
+        self.edDateId = None
+        self.dtCalRange = 65
+        self.dtDispRange = 5
+        self.dtTimeStamp1 = 10
+        self.dtTimeStamp2 = 20
+        self.deltaDt1 = self.dtCalRange - self.dtDispRange
+        self.deltaDt2 = self.dtCalRange - self.dtDispRange - self.dtTimeStamp1
+        self.deltaDt3 = self.dtCalRange - self.dtDispRange - self.dtTimeStamp2
+
+        self.dates = []
+        self.datesPrevious = []
+        self.dateMap = {}
+        self.dateMapPrevious = {}
+
+        self.objIdList = []
+        self.objMap = {}
+        self.managers = []
+        self.portfolios = []
+        self.customportfolios = []
+
+        self.posIdList = []
+        self.posIdListPrevious = []
+        self.posIdMap = {}
+        self.posIdMapPrevious = {}
+        self.retIdList = []
+        self.retIdMap = {}
+
+    def usage(self):
+        print >> sys.stderr, 'python qa_backend_automation.py [inputDir] [outputDir] [beginDate] [endDate]'
+
+    def downloadTables(self, iDir, oDir):
+        pass
+
+    def parseArgv(self):
+        argv = self.argv
+
+        if len(argv) == 4:
+            self.oDir = argv[1]
+            self.bDt = argv[2]
+            self.eDt = argv[3]
+        elif len(argv) == 5:
+            self.iDir = argv[1]
+            self.oDir = argv[2]
+            self.bDt = argv[3]
+            self.eDt = argv[4]
+            self.downloadTables(iDir, oDir)
+        else :
+            print >> sys.stderr, 'Not Enough Arguments'
+            usage()
+            sys.exit()
+
+    def outputs(self, array):
+        return [ array[self.deltaDt2: self.deltaDt1].mean(), np.percentile(array[self.deltaDt2: self.deltaDt1], 1),  np.percentile(array[self.deltaDt2: self.deltaDt1], 5),  np.percentile(array[self.deltaDt2: self.deltaDt1], 95),  np.percentile(array[self.deltaDt2: self.deltaDt1], 99), array[self.deltaDt2: self.deltaDt1].std(),
+                array[self.deltaDt3: self.deltaDt1].mean(), np.percentile(array[self.deltaDt3: self.deltaDt1], 1),  np.percentile(array[self.deltaDt3: self.deltaDt1], 5),  np.percentile(array[self.deltaDt3: self.deltaDt1], 95),  np.percentile(array[self.deltaDt3: self.deltaDt1], 99), array[self.deltaDt3: self.deltaDt1].std(),
+                array[0: self.deltaDt1].mean(), np.percentile(array[0: self.deltaDt1], 1),  np.percentile(array[0: self.deltaDt1], 5),  np.percentile(array[0: self.deltaDt1], 95),  np.percentile(array[0: self.deltaDt1], 99), array[0: self.deltaDt1].std() ]
+
+
+    def generateDate(self):
+        ''' grep dateId list from wtDates with given date range according to etl data distribution '''
+
+        bDt = self.bDt
+        eDt = self.eDt
+
+        dtFile = ''.join([self.oDir, '/', objWtDates])
+
+        fg = False
+        bgDateId = 0
+        edDateId = 0
+
+        for line in readFile(dtFile):
+            words = line.strip().split(dlm)
+            if re.search(bDt, words[1]):
+                fg = True
+                print 'I am at former date search'
+            if fg:
+                if words[1].split()[0] == bDt:
+                    bgDateId = words[0]
+                self.dates.append(words[0])
+                self.dateMap[words[0]] = words[1].split()[0]
+            if re.search(eDt, words[1]):
+                edDateId = words[0]
+                fg = False
+
+        fgPrevious = False
+        for line in readFile(dtFile):
+            words = line.strip().split(dlm)
+            if re.search(str(int(bgDateId) - self.dtCalRange), words[0]):
+                fgPrevious = True
+                print 'I am at later date search'
+            if fgPrevious:
+                self.datesPrevious.append(words[0])
+                self.dateMapPrevious[words[0]] = words[1].split()[0]
+            if re.search(edDateId, words[0]):
+                fgPrevious = False
+
+        self.bgDateId = int(bgDateId)
+        self.edDateId = int(edDateId)
+
+        print bDt + ' ' + eDt + ' '+ str(self.bgDateId - self.dtCalRange) + ' ' + str(self.edDateId)
+
+    def loadObjects(self):
+        objFile = ''.join([self.oDir, '/', objObjects])
+        for line in readFile(objFile):
+            words = line.strip().split(dlm)
+            objId = words[0]
+            idx = words[1]
+            objType = words[3]
+
+            self.objIdList.append(objId)
+            self.objMap[objId] = idx
+
+            if objType.title() == 'Manager':
+                self.managers.append(objId)
+            if objType.title() == 'Portfolio':
+                self.portfolios.append(objId)
+            if objType.title() == 'Custom Portfolio':
+                self.customportfolios.append(objId)
+
+    def generatePosIdList(self):
+        posMasterFile = ''.join([self.oDir, '/', posMaster])
+
+        managers = {'0' : {}, '1' : {}}
+        portfolios = {'0' : {}, '1' : {}}
+
+        for dt in self.dates:
+            managers['0'][dt] = 0
+            managers['1'][dt] = 0
+            portfolios['0'][dt] = 0
+            portfolios['1'][dt] = 0
+
+        posIdAll = []
+        for line in readFile(posMasterFile):
+            words = line.strip().split(dlm)
+            posId = words[0]
+            statusId = words[2]
+            isJmr = words[3]
+            objId = words[5]
+            dateId = words[6]
+            isActive = words[9]
+
+            posIdAll.append(posId)
+
+            label = 0
+
+            ##### calculate # of positions id each day under conditions isActive = 1 and statusId = 11 #####
+            if dateId not in self.datesPrevious or isActive != '1' or statusId != '11':
+                continue
+            if dateId not in self.dates or isActive != '1' or statusId != '11':
+                label = 1
+
+            self.posIdListPrevious.append(posId)
+            self.posIdMapPrevious[posId] = [isJmr, objId, dateId]
+
+            if label == 0:
+                self.posIdList.append(posId)
+                self.posIdMap[posId] = [isJmr, objId, dateId]
+
+                ##### calculate # of portfolios and managers of each day #####
+                if objId in self.managers:
+                    managers[isJmr][dateId] += 1
+                if objId in self.portfolios or objId in self.customportfolios:
+                    portfolios[isJmr][dateId] += 1
+
+        self.reportPosId(managers, portfolios, posIdAll)
+
+    def reportPosId(self, managers, portfolios, posIdAll):
+
+        ##### check whether id is unique #####
+        uniqId = set(posIdAll)
+        nUniqId = len(uniqId)
+        nTotId = len(posIdAll)
+
+        ##### Write Report for Position Master table #####
+        ws = self.wb.add_worksheet('posMaster')
+        ws.hide_gridlines(2)
+        ws.write('A2', 'Managers')
+        ws.write('A4', 'Portfolios')
+        ws.write('B1', 'DateId')
+        ws.write('B2', '# of isJmr = 0')
+        ws.write('B3', '# of isJmr = 1')
+        ws.write('B4', '# of isJmr = 0')
+        ws.write('B5', '# of isJmr = 1')
+        for i in range(len(self.dates)) :
+            ws.write(0, 2 + i, self.dateMap[self.dates[i]])
+            ws.write(1, 2 + i, managers['0'][self.dates[i]])
+            ws.write(2, 2 + i, managers['1'][self.dates[i]])
+            ws.write(3, 2 + i, portfolios['0'][self.dates[i]])
+            ws.write(4, 2 + i, portfolios['1'][self.dates[i]])
+
+        ws.write('A7', '# of unique id')
+        ws.write('A8', nUniqId)
+        ws.write('B7', '# of total records')
+        ws.write('B8', nTotId)
+
+    def checkPosAllocation(self):
+        posAllocFile = ''.join([self.oDir, '/', posStAllocations])
+
+        msPosId = 0
+        msMgrPosId = 0
+
+        nPflChd = {}
+        nAllocations = {}
+
+        numDollarValue = Numeric()
+        numDollarWeight = Numeric()
+        numVolWeight = Numeric()
+        numLmvWeight = Numeric()
+        numLongWeight = Numeric()
+        numShortWeight = Numeric()
+        numNra = Numeric()
+        numMaxGross = Numeric()
+        numDollarMargin = Numeric()
+
+        variableList = {'dollarValue','dollarWeight','volWeight','lmvWeight','longWeight','shortWeight','nra','maxGross','dollarMargin'}
+
+        bgDateId = self.bgDateId
+        edDateId = self.edDateId
+
+        ##Load each words character
+        for line in readFile(posAllocFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            managerObjId = words[2]
+            managerPosId = words[3]
+            dollarValue = words[4]
+            dollarWeight = words[5]
+            volWeight = words[6]
+            lmvWeight = words[7]
+            longWeight = words[8]
+            shortWeight = words[9]
+            nra = words[10]
+            maxGross = words[11]
+            dollarMargin = words[12]
+
+            ##### check missing rate for posId and managerPosId #####
+            if posId.strip() == '':
+                msPosId += 1
+            if managerPosId.strip() == '':
+                msMgrPosId += 1
+
+            label = 0
+            if posId not in self.posIdListPrevious:
+                continue
+            if posId not in self.posIdList:
+                label = 1
+
+            ##### calculate # of child objId in each portfolio in each day #####
+            if label == 0:
+                isJmr = self.posIdMap[posId][0]
+                objId = self.posIdMap[posId][1]
+                dateId = self.posIdMap[posId][2]
+                if objId not in nPflChd:
+                    nPflChd[objId] = {}
+                if isJmr not in nPflChd[objId]:
+                    nPflChd[objId][isJmr] = {}
+                if dateId not in nPflChd[objId][isJmr]:
+                    nPflChd[objId][isJmr][dateId] = 0
+                nPflChd[objId][isJmr][dateId] += 1
+
+            ##### Map dollarvalue according to portforlio obj id(objId), date id, managerobj id #####
+            isJmr = self.posIdMapPrevious[posId][0]
+            objId = self.posIdMapPrevious[posId][1]
+            dateId = int(self.posIdMapPrevious[posId][2])
+            index = dateId - (bgDateId - self.dtCalRange)
+
+            for variable in variableList:
+                if objId not in nAllocations:
+                    nAllocations[objId] = {}
+                if managerObjId not in nAllocations[objId]:
+                    nAllocations[objId][managerObjId] = {}
+                if variable not in nAllocations[objId][managerObjId]:
+                    nAllocations[objId][managerObjId][variable] = {}
+                if isJmr not in nAllocations[objId][managerObjId][variable]:
+                    nAllocations[objId][managerObjId][variable][isJmr] = np.zeros(edDateId - (bgDateId - self.dtCalRange) + 1, dtype = 'float32')
+                if variable == 'dollarValue':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = dollarValue
+                if variable == 'dollarWeight':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = dollarWeight
+                if variable == 'volWeight':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = volWeight
+                if variable == 'lmvWeight':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = lmvWeight
+                if variable == 'longWeight':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = longWeight
+                if variable == 'shortWeight':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = shortWeight
+                if variable == 'nra':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = nra
+                if variable == 'maxGross':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = maxGross
+                if variable == 'dollarMargin':
+                    nAllocations[objId][managerObjId][variable][isJmr][index] = dollarMargin
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numDollarValue.add(dollarValue)
+            numDollarWeight.add(dollarWeight)
+            numVolWeight.add(volWeight)
+            numLmvWeight.add(lmvWeight)
+            numLongWeight.add(longWeight)
+            numShortWeight.add(shortWeight)
+            numNra.add(nra)
+            numMaxGross.add(maxGross)
+            numDollarMargin.add(dollarMargin)
+
+        self.reportPosAlloc(msPosId, msMgrPosId, nPflChd, numDollarValue, numDollarWeight, numVolWeight, numLmvWeight, numLongWeight, numShortWeight, numNra, numMaxGross, numDollarMargin, nAllocations, variableList)
+
+    def reportPosAlloc(self, msPosId, msMgrPosId, nPflChd, numDollarValue, numDollarWeight, numVolWeight, numLmvWeight, numLongWeight, numShortWeight, numNra, numMaxGross, numDollarMargin, nAllocations, variableList):
+
+        ws = self.wb.add_worksheet('posStAllocations')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'managerPosId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+        ws.write('C2', msMgrPosId)
+
+        row = 3
+        col = 2
+        mar = 0
+        r = 0
+        for dt in self.dates:
+            ws.write(row, col, self.dateMap[dt])
+            r = row + 1
+            for objId in nPflChd:
+                ws.write(r, 0, self.objMap[objId])
+                for isJmr in nPflChd[objId]:
+                    ws.write(r, 1, 'isJmr = ' + isJmr)
+                    if dt in nPflChd[objId][isJmr]:
+                        ws.write(r, col, nPflChd[objId][isJmr][dt])
+                    r += 1
+            col += 1
+
+        merge_format = self.wb.add_format()
+        merge_format.set_align('center')
+        merge_format.set_align('vcenter')
+        #calculate the spot dollarValue number for each portforlio + manager + date
+        for variable in variableList:
+            row = r + 2
+            col = 4
+            ws.write(row, 0, 'Item')
+            ws.write(row, 1, 'Portforlio')
+            ws.write(row, 2, 'Manager')
+            ws.write(row, 3, 'isJmr')
+            for dt in self.datesPrevious:
+                if int(dt) >= self.bgDateId - self.dtDispRange:
+                    ws.write(row, col, self.dateMapPrevious[dt])
+                    col += 1
+            r = row + 1
+            col = 4
+            for objId in nAllocations:
+                ws.write(r, 1, self.objMap[objId])
+                mgObj = r
+                for managerObjId in nAllocations[objId]:
+                    ws.write (r, 2, self.objMap[managerObjId])
+                    mgRow = r
+                    for isJmr in nAllocations[objId][managerObjId][variable]:
+                        ws.write (r, 0, variable)
+                        ws.write (r, 1, self.objMap[objId])
+                        ws.write (r, 2, self.objMap[managerObjId])
+                        ws.write (r, 3, 'isJmr = ' + isJmr)
+                        ws.write_row (r, col, nAllocations[objId][managerObjId][variable][isJmr][self.dtCalRange - self.dtDispRange : self.dtCalRange + self.edDateId - self.bgDateId + 1])
+                        r += 1
+                    #ws.merge_range(mgRow, 1, r - 1, 1, self.objMap[managerObjId], merge_format)
+                #ws.merge_range(mgObj, 0, r - 1, 0, self.objMap[objId], merge_format)
+
+            col += self.dtDispRange + self.edDateId - self.bgDateId + 1
+
+            r = row + 1
+            title = ['avg 10d', '1% 10d', '5% 10d', '95% 10d', '99% 10d', 'std 10d', 'avg 20d', '1% 20d', '5% 20d', '95% 20d', '99% 20d', 'std 20d', 'avg 60d', '1% 60d', '5% 60d', '95% 60d', '99% 60d', 'std 60d']
+            ws.write_row(row, col, title)
+            for objId in nAllocations:
+                for managerObjId in nAllocations[objId]:
+                    for isJmr in nAllocations[objId][managerObjId][variable]:
+                        ws.write_row(r, col, self.outputs(nAllocations[objId][managerObjId][variable][isJmr]))
+                        r += 1
+
+        mar = r + 1
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg', '1% percentile', '5% percentile', '95% percentile', '99% percentile', 'std'])
+        ws.write_column(mar + 1, 1, ['dollarValue'] + numDollarValue.out())
+        ws.write_column(mar + 1, 2, ['dollarWeight'] + numDollarWeight.out())
+        ws.write_column(mar + 1, 3, ['volWeight'] + numVolWeight.out())
+        ws.write_column(mar + 1, 4, ['lmvWeight'] + numLmvWeight.out())
+        ws.write_column(mar + 1, 5, ['longWeight'] + numLongWeight.out())
+        ws.write_column(mar + 1, 6, ['shortWeight'] + numShortWeight.out())
+        ws.write_column(mar + 1, 7, ['nra'] + numNra.out())
+        ws.write_column(mar + 1, 8, ['maxGross'] + numMaxGross.out())
+        ws.write_column(mar + 1, 9, ['dollarMargin'] + numDollarMargin.out())
+
+        #self.formatset(ws)
+
+    def checkPosAssetClassOverview(self):
+
+        posAssetClassOverviewFile = ''.join([self.oDir, '/', posStAssetClassOverview])
+
+        msPosId = 0
+
+        numPositions = Numeric()
+        numDollarValue = Numeric()
+        numLongWeight = Numeric()
+        numShortWeight = Numeric()
+        numNetWeight = Numeric()
+        numPnlDtd = Numeric()
+        numPnlMtd = Numeric()
+        numPnlYtd = Numeric()
+        numBucketId = Numeric()
+
+        posIdAll = []
+        bucketIdAll = []
+        posPlsBucketIdAll = []
+        nPosId = {}
+
+        #Load variables
+        for line in readFile(posAssetClassOverviewFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            assetCode = words[2]
+            assetName = words[3]
+            positions = words[4]
+            dollarValue = words[5]
+            longWeight = words[6]
+            shortWeight = words[7]
+            netWeight = words[8]
+            pnlDtd = words[9]
+            pnlMtd = words[10]
+            pnlYtd = words[11]
+            bucketId = words[12]
+
+            posIdAll.append(posId)
+            bucketIdAll.append(bucketId)
+            posPlsBucketIdAll.append('_'.join([posId, bucketId]))
+
+            ##### check missing rate for posId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check # of records in each posId #####
+            if posId not in nPosId :
+                nPosId[posId] = 1
+            else :
+                nPosId[posId] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numPositions.add(positions)
+            numDollarValue.add(dollarValue)
+            numLongWeight.add(longWeight)
+            numShortWeight.add(shortWeight)
+            numNetWeight.add(netWeight)
+            numPnlDtd.add(pnlDtd)
+            numPnlMtd.add(pnlMtd)
+            numPnlYtd.add(pnlYtd)
+            numBucketId.add(bucketId)
+
+
+        self.reportPosAssetClassOverview(posIdAll, bucketIdAll, posPlsBucketIdAll, msPosId, nPosId,  numPositions, numDollarValue, numLongWeight, numShortWeight, numNetWeight, numPnlDtd, numPnlMtd, numPnlYtd, numBucketId)
+
+    def reportPosAssetClassOverview(self, posIdAll, bucketIdAll, posPlsBucketIdAll, msPosId, nPosId,  numPositions, numDollarValue, numLongWeight, numShortWeight, numNetWeight, numPnlDtd, numPnlMtd, numPnlYtd, numBucketId) :
+
+        ws = self.wb.add_worksheet('posSTAssetClassOverview')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+
+        uniqId = set(posPlsBucketIdAll)
+        nUniqId = len(uniqId)
+        nTotId = len(posPlsBucketIdAll)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        ws.write(row, 0, 'posId')
+        ws.write(row, 1, '# of records')
+        row = row + 1
+        for i in nPosId:
+            ws.write(row, 0, i)
+            ws.write(row, 1, nPosId[i])
+            row += 1
+
+        mar = row + 2
+
+        #Outputs
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['numPositions'] + numPositions.out())
+        ws.write_column(mar + 1, 2, ['dollarValue'] + numDollarValue.out())
+        ws.write_column(mar + 1, 3, ['longWeight'] + numLongWeight.out())
+        ws.write_column(mar + 1, 4, ['shortWeight'] + numShortWeight.out())
+        ws.write_column(mar + 1, 5, ['netWeight'] + numNetWeight.out())
+        ws.write_column(mar + 1, 6, ['pnlDtd'] + numPnlDtd.out())
+        ws.write_column(mar + 1, 7, ['pnlMtd'] + numPnlMtd.out())
+        ws.write_column(mar + 1, 8, ['pnlYtd'] + numPnlYtd.out())
+        ws.write_column(mar + 1, 9, ['bucketId'] + numBucketId.out())
+
+        ws.write(mar + 7, 0, '# of distinct pair "posId + bucketId"')
+        ws.write(mar + 8, 0, nUniqId)
+        ws.write(mar + 7, 1, '# of total records')
+        ws.write(mar + 8, 1, nTotId)
+
+        #self.formatset(ws)
+
+    def checkPosAttribution(self):
+
+        posAttributionFile = ''.join([self.oDir, '/', posStAttribution])
+
+        msPosId = 0
+
+        numWeight = Numeric()
+        numContribution = Numeric()
+        numAllocation = Numeric()
+        numResidual = Numeric()
+        numMarket = Numeric()
+
+        posIdAll = []
+        bucketIdAll = []
+        posPlsBucketIdAll =[]
+
+        nPosId = {}
+        for line in readFile(posAttributionFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            ymd = words[2]
+            bucketId = words[3]
+            weight = words[4]
+            contribution = words[5]
+            allocation = words[6]
+            residual= words[7]
+            market = words[8]
+
+            posIdAll.append(posId)
+            bucketIdAll.append(bucketId)
+            posPlsBucketIdAll.append('_'.join([posId + bucketId + ymd]))
+
+            ##### check missing rate for posId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check # of records in each combination of posId and ymd #####
+            if posId not in nPosId :
+                nPosId[posId] = {}
+            if ymd not in nPosId[posId] :
+                nPosId[posId][ymd] = 0
+            nPosId[posId][ymd] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numWeight.add(weight)
+            numContribution.add(contribution)
+            numAllocation.add(allocation)
+            numResidual.add(residual)
+            numMarket.add(market)
+
+        self.reportPosAttribution(posIdAll, bucketIdAll, posPlsBucketIdAll, msPosId, numWeight, numContribution, numAllocation, numResidual, numMarket, nPosId)
+
+    def reportPosAttribution(self, posIdAll, bucketIdAll, posPlsBucketIdAll, msPosId, numWeight, numContribution, numAllocation, numResidual, numMarket, nPosId):
+
+        ws = self.wb.add_worksheet('posSTAttribution')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+
+        uniqId = set(posPlsBucketIdAll)
+        nUniqId = len(uniqId)
+        nTotId = len(posPlsBucketIdAll)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        ws.write(row, 0, 'posId')
+        ws.write(row, 1, 'Y')
+        ws.write(row, 2, 'Q')
+        ws.write(row, 3, 'M')
+        ws.write(row, 4, 'D')
+        row = row + 1
+        for posId in nPosId:
+            j = 0
+            for ymd in nPosId[posId]:
+                ws.write(row, 0, posId)
+                ws.write(row, j + 1, nPosId[posId][ymd])
+                j += 1
+            row += 1
+
+        mar = row + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['weight'] + numWeight.out())
+        ws.write_column(mar + 1, 2, ['contribution'] + numContribution.out())
+        ws.write_column(mar + 1, 3, ['allocation'] + numAllocation.out())
+        ws.write_column(mar + 1, 4, ['residual'] + numResidual.out())
+        ws.write_column(mar + 1, 5, ['market'] + numMarket.out())
+
+        ws.write(mar + 8, 0, '# of distinct pair "posId+bucketId+ymd"')
+        ws.write(mar + 9, 0, nUniqId)
+        ws.write(mar + 8, 1, '# of total records')
+        ws.write(mar + 9, 1, nTotId)
+
+        #self.formatset(ws)
+
+    def checkPosAttributionIntegrated(self):
+
+        posAttributionIntegratedFile = ''.join([self.oDir, '/', posStAttributionIntegrated])
+
+        msPosId = 0
+
+        numLongAlpha = Numeric()
+        numShortAlpha = Numeric()
+        numLongSector = Numeric()
+        numShortSector = Numeric()
+        numLongCap = Numeric()
+        numShortCap = Numeric()
+        numLongRegion = Numeric()
+        numShortRegion = Numeric()
+        numLongMarket = Numeric()
+        numShortMarket = Numeric()
+        numNotEquityLong = Numeric()
+        numNotEquityShort = Numeric()
+        numFees = Numeric()
+        numYmd = Numeric()
+
+        nPosId = {}
+        posIdAll = []
+
+        for line in readFile(posAttributionIntegratedFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            longAlpha = words[2]
+            shortAlpha = words[3]
+            longSector = words[4]
+            shortSector = words[5]
+            longCap = words[6]
+            shortCap = words[7]
+            longRegion = words[8]
+            shortRegion = words[9]
+            longMarket = words[10]
+            shortMarket = words[11]
+            notEquityLong = words[12]
+            notEquityShort = words[13]
+            fees = words[14]
+            ymd = words[15]
+
+            posIdAll.append(posId)
+
+            ##### check missing rate for posId #####
+            if posId.strip() == '':
+                msPosId += 1
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check # of records in each combination of posId and ymd #####
+            if posId not in nPosId :
+                nPosId[posId] = {}
+            if ymd not in nPosId[posId] :
+                nPosId[posId][ymd] = 0
+            nPosId[posId][ymd] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numLongAlpha.add(longAlpha)
+            numShortAlpha.add(shortAlpha)
+            numLongSector.add(longSector)
+            numShortSector.add(shortSector)
+            numLongCap.add(longCap)
+            numShortCap.add(shortCap)
+            numLongRegion.add(longRegion)
+            numShortRegion.add(shortRegion)
+            numLongMarket.add(longMarket)
+            numShortMarket.add(shortMarket)
+            numNotEquityLong.add(notEquityLong)
+            numNotEquityShort.add(notEquityShort)
+            numFees.add(fees)
+            numYmd.add(ymd)
+
+
+        self.reportPosAttributionIntegrated(posIdAll, msPosId, numLongAlpha, numShortAlpha,  numLongSector, numShortSector, numLongCap, numShortCap, numLongRegion, numShortRegion, numLongMarket, numShortMarket, numNotEquityLong, numNotEquityShort, numFees, numYmd, nPosId)
+
+    def reportPosAttributionIntegrated(self, posIdAll, msPosId, numLongAlpha, numShortAlpha,  numLongSector, numShortSector, numLongCap, numShortCap, numLongRegion, numShortRegion, numLongMarket, numShortMarket, numNotEquityLong, numNotEquityShort, numFees, numYmd, nPosId) :
+
+        ws = self.wb.add_worksheet('posSTAttributionIntegrated')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+
+        uniqId = set(posIdAll)
+        nUniqId = len(uniqId)
+        nTotId = len(posIdAll)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        ws.write(row, 0, 'posId')
+        ws.write(row, 1, 'Y')
+        ws.write(row, 2, 'Q')
+        ws.write(row, 3, 'M')
+        ws.write(row, 4, 'D')
+        row = row + 1
+        for posId in nPosId:
+            j = 0
+            for ymd in nPosId[posId]:
+                ws.write(row, 0, posId)
+                ws.write(row, j + 1, nPosId[posId][ymd])
+                j += 1
+            row += 1
+
+        mar = row + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['longAlpha'] + numLongAlpha.out())
+        ws.write_column(mar + 1, 2, ['shortAlpha'] + numShortAlpha.out())
+        ws.write_column(mar + 1, 3, ['longSector'] + numLongSector.out())
+        ws.write_column(mar + 1, 4, ['shortSector'] + numShortSector.out())
+        ws.write_column(mar + 1, 5, ['longCap'] + numLongCap.out())
+        ws.write_column(mar + 1, 6, ['shortCap'] + numShortCap.out())
+        ws.write_column(mar + 1, 7, ['longRegion'] + numLongRegion.out())
+        ws.write_column(mar + 1, 8, ['shortRegion'] + numShortRegion.out())
+        ws.write_column(mar + 1, 9, ['longMarket'] + numLongMarket.out())
+        ws.write_column(mar + 1, 10, ['shortMarket'] + numShortMarket.out())
+        ws.write_column(mar + 1, 11, ['notEquityLong'] + numNotEquityLong.out())
+        ws.write_column(mar + 1, 12, ['notEquityShort'] + numNotEquityShort.out())
+        ws.write_column(mar + 1, 13, ['fees'] + numFees.out())
+
+        #self.formatset(ws)
+
+    def checkPosContribution(self):
+
+        posContributionFile = ''.join([self.oDir, '/', posStContribution])
+        msPosId = 0
+        msMgrPosId = 0
+
+        numDollarPnl= Numeric()
+        numIrr = Numeric()
+        numContribution = Numeric()
+
+        posIdAll = []
+        nPosId = {}
+        for line in readFile(posContributionFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            managerObjId = words[2]
+            managerPosId = words[3]
+            ymd = words[4]
+            dollarPnl = words[5]
+            irr = words[6]
+            contribution = words[7]
+
+            posIdAll.append(posId)
+
+            ##### check missing rate for posId and managerPosId #####
+            if posId.strip() == '':
+                msPosId += 1
+            if managerPosId.strip() == '':
+                msMgrPosId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check # of records in each combination of posId and ymd #####
+            if posId not in nPosId :
+                nPosId[posId] = {}
+            if ymd not in nPosId[posId] :
+                nPosId[posId][ymd] = 0
+            nPosId[posId][ymd] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numDollarPnl.add(dollarPnl)
+            numIrr.add(irr)
+            numContribution.add(contribution)
+
+        self.reportPosContribution(posIdAll, msMgrPosId, msPosId,  numDollarPnl, numIrr, numContribution, nPosId)
+
+    def reportPosContribution(self, posIdAll, msMgrPosId, msPosId,  numDollarPnl, numIrr, numContribution, nPosId) :
+
+        ws = self.wb.add_worksheet('posSTContribution')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        ws.write(row, 0, 'posId')
+        ws.write(row, 1, 'Y')
+        ws.write(row, 2, 'Q')
+        ws.write(row, 3, 'M')
+        ws.write(row, 4, 'D')
+        row = row + 1
+        for posId in nPosId:
+            j = 0
+            for ymd in nPosId[posId]:
+                ws.write(row, 0, posId)
+                ws.write(row, j + 1, nPosId[posId][ymd])
+                j += 1
+            row += 1
+
+        mar = row + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['dollarPnl'] + numDollarPnl.out())
+        ws.write_column(mar + 1, 2, ['irr'] + numIrr.out())
+        ws.write_column(mar + 1, 3, ['contribution'] + numContribution.out())
+
+        #self.formatset(ws)
+
+    def checkPosDecileCharts(self):
+
+        posDecileCharts = ''.join([self.oDir, '/', posStDecileCharts])
+        msPosId = 0
+
+        numWavgLong = Numeric()
+        numWavgShort = Numeric()
+        numUpperDecileLong = Numeric()
+        numUpperDecileShort = Numeric()
+        numLowerDecileLong = Numeric()
+        numLowerDecileShort = Numeric()
+
+        posIdAll = []
+        nPosId ={}
+        for line in readFile(posDecileCharts):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            section = words[2]
+            wavgLong = words[3]
+            wavgShort = words[4]
+            upperDecileLong = words[5]
+            upperDecileShort = words[6]
+            lowerDecileLong = words[7]
+            lowerDecileShort = words[8]
+
+            posIdAll.append(posId)
+
+            ##### check missing rate for posId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check # of records in each combination of posId and section #####
+            if posId not in nPosId :
+                nPosId[posId] = {}
+            if section not in nPosId[posId] :
+                nPosId[posId][section] = 0
+            nPosId[posId][section] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numWavgShort.add(wavgShort)
+            numUpperDecileLong.add(upperDecileLong)
+            numUpperDecileShort.add(upperDecileShort)
+            numLowerDecileLong.add(lowerDecileLong)
+            numLowerDecileShort.add(lowerDecileShort)
+
+        self.reportDecileCharts(posIdAll,  msPosId,   numWavgLong, numWavgShort, numUpperDecileLong, numUpperDecileShort, numLowerDecileLong, numLowerDecileShort, nPosId)
+
+    def reportDecileCharts(self, posIdAll,  msPosId,   numWavgLong, numWavgShort, numUpperDecileLong, numUpperDecileShort, numLowerDecileLong, numLowerDecileShort, nPosId) :
+
+        ws = self.wb.add_worksheet('posSTDecileCharts')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        ws.write(row, 0, 'posId')
+        ws.write(row, 1, 'MKCAP')
+        ws.write(row, 2, 'BETA')
+        ws.write(row, 3, 'DIV')
+        ws.write(row, 4, 'ADV')
+        row = row + 1
+        for posId in nPosId:
+            j = 0
+            for section in nPosId[posId]:
+                ws.write(row, 0, posId)
+                ws.write(row, j + 1, nPosId[posId][section])
+                j += 1
+            row += 1
+
+        mar = row + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['wavgLong'] + numWavgLong.out())
+        ws.write_column(mar + 1, 2, ['wavgShort'] + numWavgShort.out())
+        ws.write_column(mar + 1, 3, ['upperDecileLong'] + numUpperDecileLong.out())
+        ws.write_column(mar + 1, 4, ['upperDecileShort'] + numUpperDecileShort.out())
+        ws.write_column(mar + 1, 5, ['lowerDecileLong'] + numLowerDecileLong.out())
+        ws.write_column(mar + 1, 6, ['lowerDecileShort'] + numLowerDecileShort.out())
+
+        #self.formatset(ws)
+
+    def checkPosHistorical(self):
+
+        posHistoricalFile = ''.join([self.oDir, '/', posStHistorical])
+        msPosId = 0
+        msObjId = 0
+
+        numTurnoverDollar= Numeric()
+        numTurnoverPercent = Numeric()
+
+        posIdAll = []
+        objIdAll = []
+
+        #Read file and variables
+        for line in readFile(posHistoricalFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            objId = words[2]
+            dateId = words[3]
+            turnoverDollar = words[4]
+            turnoverPercent = words[5]
+            equity = words[6]
+            imv = words[7]
+
+            posIdAll.append(posId)
+            objIdAll.append(objId)
+
+            ##### check missing rate for posId and ObjId #####
+            if posId.strip() == '':
+                msPosId += 1
+            if objId.strip() == '':
+                msObjId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numTurnoverDollar.add(turnoverDollar)
+            numTurnoverPercent.add(turnoverPercent)
+
+        self.reportPosHistorical(posIdAll, objIdAll, msPosId, msObjId , numTurnoverDollar, numTurnoverPercent)
+
+    def reportPosHistorical(self, posIdAll, objIdAll, msPosId, msObjId, numTurnoverDollar, numTurnoverPercent) :
+
+        ws = self.wb.add_worksheet('posSTHistorical')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'objId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+        ws.write('C2', msObjId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        mar = mar + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['turnoverDollar'] + numTurnoverDollar.out())
+        ws.write_column(mar + 1, 2, ['turnoverPercent'] + numTurnoverPercent.out())
+
+        #self.formatset(ws)
+
+    def checkPosLookback(self):
+
+        posLookback = ''.join([self.oDir, '/', posStLookback])
+        msPosId = 0
+        msDateId = 0
+
+        numWeightedReturnLong = Numeric()
+        numWeightedReturnShort = Numeric()
+        numNLong = Numeric()
+        numNShort = Numeric()
+        numGrowthLong = Numeric()
+        numGrowthShort = Numeric()
+        numTrend = Numeric()
+        numTrendUp = Numeric()
+        numTrendDown = Numeric()
+
+        posIdAll = []
+        dateIdAll = []
+
+        #Read file and variables
+        for line in readFile(posLookback):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            dateId = words[2]
+            weightedReturnLong = words[3]
+            weightedReturnShort = words[4]
+            nLong = words[5]
+            nShort = words[6]
+            growthLong = words[7]
+            growthShort = words[8]
+            trend = words[9]
+            trendUp = words[10]
+            trendDown = words[11]
+
+            posIdAll.append(posId)
+            dateIdAll.append(dateId)
+
+            ##### check missing rate for posId and dateId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if dateId.strip() == '':
+                msDateId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numWeightedReturnLong.add(weightedReturnLong)
+            numWeightedReturnShort.add(weightedReturnShort)
+            numNLong.add(nLong)
+            numNShort.add(nShort)
+            numGrowthLong.add(growthLong)
+            numGrowthShort.add(growthShort)
+            numTrend.add(trend)
+            numTrendUp.add(trendUp)
+            numTrendDown.add(trendDown)
+
+        self.reportPosLookback(posIdAll, dateIdAll,  msPosId,  msDateId, numWeightedReturnLong, numWeightedReturnShort, numNLong, numNShort, numGrowthLong, numGrowthShort, numTrend, numTrendUp, numTrendDown)
+
+    def reportPosLookback(self, posIdAll, dateIdAll,  msPosId,  msDateId, numWeightedReturnLong, numWeightedReturnShort, numNLong, numNShort, numGrowthLong, numGrowthShort, numTrend, numTrendUp, numTrendDown) :
+
+        ws = self.wb.add_worksheet('posSTLookback')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'dateId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+        ws.write('C2', msDateId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        mar = mar + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['weightedReturnLong'] + numWeightedReturnLong.out())
+        ws.write_column(mar + 1, 2, ['waightedReturnShort'] + numWeightedReturnShort.out())
+        ws.write_column(mar + 1, 3, ['nLong'] + numNLong.out())
+        ws.write_column(mar + 1, 4, ['nShort'] + numNShort.out())
+        ws.write_column(mar + 1, 5, ['growthLong'] + numGrowthLong.out())
+        ws.write_column(mar + 1, 6, ['growthShort'] + numGrowthShort.out())
+        ws.write_column(mar + 1, 7, ['trend'] + numTrend.out())
+        ws.write_column(mar + 1, 8, ['trendUp'] + numTrendUp.out())
+        ws.write_column(mar + 1, 9, ['trendDown'] + numTrendDown.out())
+
+        #self.formatset(ws)
+
+    def checkPosPortSummaryOverview(self):
+
+        posPortSummaryOverviewFile = ''.join([self.oDir, '/', posStPortSummaryOverview])
+        msPosId = 0
+        msBucket = 0
+
+        numPositions = Numeric()
+        numDollarWeight = Numeric()
+        numDollarValue = Numeric()
+        numPnlDtd = Numeric()
+        numPnlMtd = Numeric()
+        numPnlYtd = Numeric()
+        numBeta = Numeric()
+        numDividend = Numeric()
+
+        variableList = {'positions','dollarWeight','dollarValue','pnlDtd','pnlMtd','pnlYtd','beta','dividend'}
+        bgDateId = self.bgDateId
+        edDateId = self.edDateId
+
+        nBucket = {}
+        nPortSummaryOverview = {}
+
+        #Read file and variables
+        for line in readFile(posPortSummaryOverviewFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            bucket = words[2]
+            positions = words[3]
+            dollarWeight = words[4]
+            dollarValue= words[5]
+            predBeta = words[6]
+            priceToBook = words[7]
+            pnlDtd = words[8]
+            pnlMtd = words[9]
+            pnlYtd = words[10]
+            beta = words[11]
+            dividend = words[12]
+
+            if pnlDtd.strip() == '':
+                pnlDtd = 99999999.0
+            if pnlMtd.strip() == '':
+                pnlMtd = 99999999.0
+            if pnlYtd.strip() == '':
+                pnlYtd = 99999999.0
+
+            ##### check missing rate for posId and bucketId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if bucket.strip() == '':
+                msBucket += 1
+
+            label = 0
+            if posId not in self.posIdListPrevious:
+                continue
+            if posId not in self.posIdList:
+                label = 1
+
+            ##### Check # of records in each bucket #####
+            if label == 0:
+                if bucket not in nBucket :
+                    nBucket[bucket] = 1
+                else :
+                    nBucket[bucket] += 1
+
+            ##### Map dollarvalue according to portforlio obj id(objId), date id, bucket id #####
+            isJmr = self.posIdMapPrevious[posId][0]
+            objId = self.posIdMapPrevious[posId][1]
+            dateId = int(self.posIdMapPrevious[posId][2])
+            index = dateId - (bgDateId - self.dtCalRange)
+
+      #      print str(pnlDtd)+' '+str(pnlMtd)+' '+str(pnlYtd)
+
+            for variable in variableList:
+                if objId not in nPortSummaryOverview:
+                    nPortSummaryOverview[objId] = {}
+                if bucket not in nPortSummaryOverview[objId]:
+                    nPortSummaryOverview[objId][bucket] = {}
+                if variable not in nPortSummaryOverview[objId][bucket]:
+                    nPortSummaryOverview[objId][bucket][variable] = {}
+                if isJmr not in nPortSummaryOverview[objId][bucket][variable]:
+                    nPortSummaryOverview[objId][bucket][variable][isJmr] = np.zeros(edDateId - (bgDateId - self.dtCalRange) + 1)
+                if variable == 'positions':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = positions
+                if variable == 'dollarWeight':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = dollarWeight
+                if variable == 'dollarValue':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = dollarValue
+                if variable == 'pnlDtd':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = pnlDtd
+                if variable == 'pnlMtd':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = pnlMtd
+                if variable == 'pnlYtd':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = pnlYtd
+                if variable == 'beta':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = beta
+                if variable == 'dividend':
+                    nPortSummaryOverview[objId][bucket][variable][isJmr][index] = dividend
+
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numPositions.add(positions)
+            numDollarWeight.add(dollarWeight)
+            numDollarValue.add(dollarValue)
+            numPnlDtd.add(pnlDtd)
+            numPnlMtd.add(pnlMtd)
+            numPnlYtd.add(pnlYtd)
+            numBeta.add(beta)
+            numDividend.add(dividend)
+
+        self.reportPosPortSummaryOverview(msPosId,  msBucket, numPositions, numDollarWeight, numDollarValue, numPnlDtd, numPnlMtd, numPnlYtd, numBeta, numDividend, nBucket, nPortSummaryOverview, variableList)
+
+    def reportPosPortSummaryOverview(self, msPosId,  msBucket, numPositions, numDollarWeight, numDollarValue, numPnlDtd, numPnlMtd, numPnlYtd, numBeta, numDividend, nBucket, nPortSummaryOverview, variableList) :
+
+        ws = self.wb.add_worksheet('posSTPortSummaryOverview')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'bucketId')
+        ws.write('A2', 'Missing')
+        ws.write('B2', msPosId)
+        ws.write('C2', msBucket)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        ws.write(row, 0, 'posId')
+        ws.write(row, 1, '# of records')
+        row = row + 1
+        for i in nBucket:
+            ws.write(row, 0, i)
+            ws.write(row, 1, nBucket[i])
+            row += 1
+
+        r = row
+
+        merge_format = self.wb.add_format()
+        merge_format.set_align('center')
+        merge_format.set_align('vcenter')
+        #calculate the spot dollarValue number for each portforlio + bucket + date
+        for variable in variableList:
+            row = r + 2
+            col = 4
+            ws.write(row, 0, 'Item')
+            ws.write(row, 1, 'Portforlio/Manager')
+            ws.write(row, 2, 'Bucket')
+            ws.write(row, 3, 'isJmr')
+            for dt in self.datesPrevious:
+                if int(dt) >= self.bgDateId - self.dtDispRange:
+                    ws.write(row, col, self.dateMapPrevious[dt])
+                    col += 1
+            r = row + 1
+            col = 4
+            for objId in nPortSummaryOverview:
+                ws.write(r, 1, self.objMap[objId])
+                mgObj = r
+                for bucket in nPortSummaryOverview[objId]:
+                    ws.write (r, 2, bucket)
+                    mgRow = r
+                    for isJmr in nPortSummaryOverview[objId][bucket][variable]:
+                        ws.write (r, 0, variable)
+                        ws.write (r, 1, self.objMap[objId])
+                        ws.write (r, 2, bucket)
+                        ws.write (r, 3, 'isJmr = ' + isJmr)
+                        ws.write_row (r, col, nPortSummaryOverview[objId][bucket][variable][isJmr][self.dtCalRange - self.dtDispRange : self.dtCalRange + self.edDateId - self.bgDateId + 1])
+                        r += 1
+                    #ws.merge_range(mgRow, 1, r - 1, 1, self.objMap[managerObjId], merge_format)
+                #ws.merge_range(mgObj, 0, r - 1, 0, self.objMap[objId], merge_format)
+
+            col += self.dtDispRange + self.edDateId - self.bgDateId + 1
+
+            r = row + 1
+            title = ['avg 10d', '1% 10d', '5% 10d', '95% 10d', '99% 10d', 'std 10d', 'avg 20d', '1% 20d', '5% 20d', '95% 20d', '99% 20d', 'std 20d', 'avg 60d', '1% 60d', '5% 60d', '95% 60d', '99% 60d', 'std 60d']
+            ws.write_row(row, col, title)
+            for objId in nPortSummaryOverview:
+                for bucket in nPortSummaryOverview[objId]:
+                    for isJmr in nPortSummaryOverview[objId][bucket][variable]:
+                        ws.write_row(r, col, self.outputs(nPortSummaryOverview[objId][bucket][variable][isJmr]))
+                        r += 1
+
+        mar = r + 1
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg', '1% percentile', '5% percentile', '95% percentile', '99% percentile', 'std'])
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['numPositions'] + numPositions.out())
+        ws.write_column(mar + 1, 2, ['dollarWeight'] + numDollarWeight.out())
+        ws.write_column(mar + 1, 3, ['dollarValue'] + numDollarValue.out())
+        ws.write_column(mar + 1, 4, ['pnlDtd'] + numPnlDtd.out())
+        ws.write_column(mar + 1, 5, ['pnlMtd'] + numPnlMtd.out())
+        ws.write_column(mar + 1, 6, ['pnlYtd'] + numPnlYtd.out())
+        ws.write_column(mar + 1, 7, ['beta'] + numBeta.out())
+        ws.write_column(mar + 1, 8, ['dividend'] + numDividend.out())
+
+        #self.formatset(ws)
+
+    def checkPosPortSummaryCharts(self):
+
+        posPortSummaryChartsFile = ''.join([self.oDir, '/', posStPortSummaryCharts])
+        msPosId = 0
+        msBucketId = 0
+
+        numLongWeight = Numeric()
+        numShortWeight = Numeric()
+        numPositionsValue = Numeric()
+        numDollarValue = Numeric()
+        numLongValue = Numeric()
+        numShortValue = Numeric()
+        numPnlDtd = Numeric()
+        numPnlMtd = Numeric()
+        numPnlYtd = Numeric()
+
+        posIdAll = []
+        bucketIdAll = []
+        posPlsBucketIdAll = []
+
+        nPosId= {}
+        #Read file and variables
+        for line in readFile(posPortSummaryChartsFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            section = words[2]
+            bucketId = words[3]
+            longWeight = words[4]
+            shortWeight= words[5]
+            positions = words[6]
+            dollarValue = words[7]
+            longValue = words[8]
+            shortValue = words[9]
+            pnlDtd = words[10]
+            pnlMtd = words[11]
+            pnlYtd = words[12]
+
+            posIdAll.append(posId)
+            bucketIdAll.append(bucketId)
+            posPlsBucketIdAll.append('_'.join([posId, bucketId, section]))
+
+            ##### check missing rate for posId and bucketId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if bucketId.strip() == '':
+                msBucketId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check # of records in each combination of posId and section #####
+            if posId not in nPosId :
+                nPosId[posId] = {}
+            if section not in nPosId[posId] :
+                nPosId[posId][section] = 0
+            nPosId[posId][section] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numLongWeight.add(longWeight)
+            numShortWeight.add(shortWeight)
+            numPositionsValue.add(positions)
+            numDollarValue.add(dollarValue)
+            numLongValue.add(longValue)
+            numShortValue.add(shortValue)
+            numPnlDtd.add(pnlDtd)
+            numPnlMtd.add(pnlMtd)
+            numPnlYtd.add(pnlYtd)
+
+        self.reportPosPortSummaryCharts(posIdAll, bucketIdAll, posPlsBucketIdAll, msPosId,  msBucketId, numLongWeight, numShortWeight, numPositionsValue, numDollarValue, numLongValue, numShortValue, numPnlDtd, numPnlMtd, numPnlYtd, nPosId)
+
+    def reportPosPortSummaryCharts(self, posIdAll, bucketIdAll, posPlsBucketIdAll, msPosId,  msBucketId, numLongWeight, numShortWeight, numPositionsValue, numDollarValue, numLongValue, numShortValue, numPnlDtd, numPnlMtd, numPnlYtd, nPosId) :
+
+        ws = self.wb.add_worksheet('posSTPortSummaryCharts')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'bucketId')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msPosId)
+        ws.write('C2', msBucketId)
+
+        uniqId = set(posPlsBucketIdAll)
+        nUniqId = len(uniqId)
+        nTotId = len(posPlsBucketIdAll)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        ws.write(row, 0, 'posId')
+        ws.write(row, 1, 'CREDIT')
+        ws.write(row, 2, 'NOTIONAL')
+        ws.write(row, 3, 'EQUITY')
+        ws.write(row, 4, 'ALL')
+        ws.write(row, 5, 'FUTURES')
+        row = row + 1
+        for posId in nPosId:
+            j = 0
+            for section in nPosId[posId]:
+                ws.write(row, 0, posId)
+                ws.write(row, j + 1, nPosId[posId][section])
+                j += 1
+            row += 1
+
+        mar = row + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['longWeight'] + numLongWeight.out())
+        ws.write_column(mar + 1, 2, ['shortWeight'] + numShortWeight.out())
+        ws.write_column(mar + 1, 3, ['numPositions'] + numPositionsValue.out())
+        ws.write_column(mar + 1, 4, ['dollarValue'] + numDollarValue.out())
+        ws.write_column(mar + 1, 5, ['longValue'] + numLongValue.out())
+        ws.write_column(mar + 1, 6, ['shortValue'] + numShortValue.out())
+        ws.write_column(mar + 1, 7, ['pnlDtd'] + numPnlDtd.out())
+        ws.write_column(mar + 1, 8, ['pnlMtd'] + numPnlMtd.out())
+        ws.write_column(mar + 1, 9, ['pnlYtd'] + numPnlYtd.out())
+
+        ws.write(mar + 7, 0, '# of distinct pair "posId+bucketId+section"')
+        ws.write(mar + 8, 0, nUniqId)
+        ws.write(mar + 7, 1, '# of total records')
+        ws.write(mar + 8, 1, nTotId)
+
+        #self.formatset(ws)
+
+    def checkPosOffsetOverlapManagers(self):
+
+        posOffsetOverlapManagersFile = ''.join([self.oDir, '/', posStOffsetOverlapManagers])
+        msPosId = 0
+        msManagerPosId = 0
+
+        numCountOverlap = Numeric()
+        numCountOffset = Numeric()
+        numGrossOverlap = Numeric()
+        numGrossOffset = Numeric()
+        numPercentOverlap = Numeric()
+        numPercentOffset = Numeric()
+
+        posIdAll = []
+        managerPosIdAll = []
+
+        #Read file and variables
+        for line in readFile(posOffsetOverlapManagersFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            managerId = words[2]
+            countOverlap= words[3]
+            countOffset = words[4]
+            grossOverlap= words[5]
+            grossOffset = words[6]
+            percentOverlap = words[7]
+            percentOffset = words[8]
+
+            posIdAll.append(posId)
+            managerPosIdAll.append(managerId)
+
+            ##### check missing rate for posId and managerPosId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if managerId.strip() == '':
+                msManagerPosId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numCountOverlap.add(countOverlap)
+            numCountOffset.add(countOffset)
+            numGrossOverlap.add(grossOverlap)
+            numGrossOffset.add(grossOffset)
+            numPercentOverlap.add(percentOverlap)
+            numPercentOffset.add(percentOffset)
+
+        self.reportPosOffsetOverlapManagers(posIdAll, managerPosIdAll,  msPosId,  msManagerPosId, numCountOverlap, numCountOffset, numGrossOverlap, numGrossOffset, numPercentOverlap, numPercentOffset)
+
+    def reportPosOffsetOverlapManagers(self, posIdAll, managerPosIdAll,  msPosId,  msManagerPosId, numCountOverlap, numCountOffset, numGrossOverlap, numGrossOffset, numPercentOverlap, numPercentOffset) :
+
+        ws = self.wb.add_worksheet('posSTOffsetOverlapManagers')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'managerPosId')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msPosId)
+        ws.write('C2', msManagerPosId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        mar = mar + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['countOverlap'] + numCountOverlap.out())
+        ws.write_column(mar + 1, 2, ['countOffset'] + numCountOffset.out())
+        ws.write_column(mar + 1, 3, ['grossOverlap'] + numGrossOverlap.out())
+        ws.write_column(mar + 1, 4, ['grossOffset'] + numGrossOffset.out())
+        ws.write_column(mar + 1, 5, ['percentOverlap'] + numPercentOverlap.out())
+        ws.write_column(mar + 1, 6, ['percentOffset'] + numPercentOffset.out())
+
+        #self.formatset(ws)
+
+    def checkPosOffsetOverlapOverlap(self):
+
+        posOffsetOverlapOverlapFile = ''.join([self.oDir, '/', posStOffsetOverlapOverlap])
+        msPosId = 0
+        gzManagers = 0
+        gzCountLong = 0
+        gzCountShort = 0
+
+        numManagers = Numeric()
+        numCountLong = Numeric()
+        numCountShort = Numeric()
+        numLongOverlap = Numeric()
+        numShortOverlap = Numeric()
+        numPercentOverlap = Numeric()
+
+        posIdAll = []
+
+        #Read file and variables
+        for line in readFile(posOffsetOverlapOverlapFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            managers = words[2]
+            countLong= words[3]
+            countShort = words[4]
+            longOverlap= words[5]
+            shortOverlap = words[6]
+            percentOverlap = words[7]
+
+            posIdAll.append(posId)
+
+            ##### check missing rate for posId and No. of <0 in managers, countLong, countShort #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if float(managers) <= 0:
+                gzManagers += 1
+
+            if float(countLong) <= 0:
+                gzCountLong += 1
+
+            if float(countShort) <= 0:
+                gzCountShort += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numManagers.add(managers)
+            numCountLong.add(countLong)
+            numCountShort.add(countShort)
+            numLongOverlap.add(longOverlap)
+            numShortOverlap.add(shortOverlap)
+            numPercentOverlap.add(percentOverlap)
+
+        self.reportPosOffsetOverlapOverlap(posIdAll, msPosId, numManagers, numCountLong, numCountShort, numLongOverlap, numShortOverlap, numPercentOverlap, gzManagers, gzCountLong, gzCountShort)
+
+    def reportPosOffsetOverlapOverlap(self, posIdAll, msPosId, numManagers, numCountLong, numCountShort, numLongOverlap, numShortOverlap, numPercentOverlap, gzManagers, gzCountLong, gzCountShort) :
+
+        ws = self.wb.add_worksheet('posSTOffsetOverlapOverlap')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msPosId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        mar = mar + 3
+
+        ws.write(mar, 1, 'numManagers')
+        ws.write(mar, 2, 'countLong')
+        ws.write(mar, 3, 'countShort')
+        ws.write(mar + 1, 0, 'Number <=0')
+        ws.write(mar + 1, 1, gzManagers)
+        ws.write(mar + 1, 2, gzCountLong)
+        ws.write(mar + 1, 3, gzCountShort)
+
+        mar = mar + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['numManagers'] + numManagers.out())
+        ws.write_column(mar + 1, 2, ['countLong'] + numCountLong.out())
+        ws.write_column(mar + 1, 3, ['countShort'] + numCountShort.out())
+        ws.write_column(mar + 1, 4, ['longOverlap'] + numLongOverlap.out())
+        ws.write_column(mar + 1, 5, ['shortOverlap'] + numShortOverlap.out())
+        ws.write_column(mar + 1, 6, ['percentOverlap'] + numPercentOverlap.out())
+
+        #self.formatset(ws)
+
+    def checkPosOffsetOverlapProxies(self):
+
+        posOffsetOverlapProxiesFile = ''.join([self.oDir, '/', posStOffsetOverlapProxies])
+        msPosId = 0
+        msProxyObjId = 0
+
+        numCountOverlap = Numeric()
+        numCountOffset = Numeric()
+        numNetOverlap= Numeric()
+        numNetOffset = Numeric()
+        numPercentOverlap = Numeric()
+        numPercentOffset = Numeric()
+
+        posIdAll = []
+        proxyObjIdAll =[]
+
+        #Read file and variables
+        for line in readFile(posOffsetOverlapProxiesFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            bucket = words[2]
+            countOverlap= words[3]
+            countOffset = words[4]
+            netOverlap= words[5]
+            netOffset = words[6]
+            percentOverlap = words[7]
+            percentOffset = words[8]
+            proxyObjId = words[9]
+
+            posIdAll.append(posId)
+            proxyObjIdAll.append(proxyObjId)
+
+            ##### check missing rate for posId and proxyObjId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if proxyObjId.strip() == '':
+                msProxyObjId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numCountOverlap.add(countOverlap)
+            numCountOffset.add(countOffset)
+            numNetOverlap.add(netOverlap)
+            numNetOffset.add(netOffset)
+            numPercentOverlap.add(percentOverlap)
+            numPercentOffset.add(percentOffset)
+
+        self.reportPosOffsetOverlapProxies(posIdAll, msPosId, proxyObjIdAll, msProxyObjId, numCountOverlap, numCountOffset, numNetOverlap, numNetOffset, numPercentOverlap, numPercentOffset)
+
+    def reportPosOffsetOverlapProxies(self, posIdAll, msPosId, proxyObjIdAll, msProxyObjId, numCountOverlap, numCountOffset, numNetOverlap, numNetOffset, numPercentOverlap, numPercentOffset):
+
+        ws = self.wb.add_worksheet('posSTOffsetOverlapProxies')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'proxyObjId')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msPosId)
+        ws.write('C2', msProxyObjId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        mar = mar + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['CountOverlap'] + numCountOverlap.out())
+        ws.write_column(mar + 1, 2, ['CountOffset'] + numCountOffset.out())
+        ws.write_column(mar + 1, 3, ['NetOverlap'] + numNetOverlap.out())
+        ws.write_column(mar + 1, 4, ['NetOffset'] + numNetOffset.out())
+        ws.write_column(mar + 1, 5, ['PercentOverlap'] + numPercentOverlap.out())
+        ws.write_column(mar + 1, 6, ['PercentOffset'] + numPercentOffset.out())
+
+        #self.formatset(ws)
+
+
+    def checkPosOffsetOverlapSummary(self):
+
+        posOffsetOverlapSummaryFile = ''.join([self.oDir, '/', posStOffsetOverlapSummary])
+        msPosId = 0
+
+        numCountOverlap = Numeric()
+        numCountOffset = Numeric()
+        numGrossOverlap= Numeric()
+        numGrossOffset = Numeric()
+        numPercentOverlap = Numeric()
+        numPercentOffset = Numeric()
+
+        posIdAll = []
+
+        #Read file and variables
+        for line in readFile(posOffsetOverlapSummaryFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            bucket = words[2]
+            countOverlap= words[3]
+            countOffset = words[4]
+            grossOverlap= words[5]
+            grossOffset = words[6]
+            percentOverlap = words[7]
+            percentOffset = words[8]
+
+            posIdAll.append(posId)
+
+            ##### check missing rate for posId #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numCountOverlap.add(countOverlap)
+            numCountOffset.add(countOffset)
+            numGrossOverlap.add(grossOverlap)
+            numGrossOffset.add(grossOffset)
+            numPercentOverlap.add(percentOverlap)
+            numPercentOffset.add(percentOffset)
+
+        self.reportPosOffsetOverlapSummary(posIdAll, msPosId, numCountOverlap, numCountOffset, numGrossOverlap, numGrossOffset, numPercentOverlap, numPercentOffset)
+
+    def reportPosOffsetOverlapSummary(self, posIdAll, msPosId, numCountOverlap, numCountOffset, numGrossOverlap, numGrossOffset, numPercentOverlap, numPercentOffset):
+
+        ws = self.wb.add_worksheet('posSTOffsetOverlapSummary')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msPosId)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        mar = mar + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['countOverlap'] + numCountOverlap.out())
+        ws.write_column(mar + 1, 2, ['countOffset'] + numCountOffset.out())
+        ws.write_column(mar + 1, 3, ['grossOverlap'] + numGrossOverlap.out())
+        ws.write_column(mar + 1, 4, ['grossOffset'] + numGrossOffset.out())
+        ws.write_column(mar + 1, 5, ['percentOverlap'] + numPercentOverlap.out())
+        ws.write_column(mar + 1, 6, ['percentOffset'] + numPercentOffset.out())
+
+    def checkPosOffsetOverlapTickers(self):
+
+        posOffsetOverlapTickersFile = ''.join([self.oDir, '/', posStOffsetOverlapTickers])
+        msPosId = 0
+        msProxyObjId = 0
+        msTickerId = 0
+        msMktVal = 0
+
+        numMktVal = Numeric()
+
+        posIdAll = []
+        proxyObjIdAll = []
+        tickerIdAll = []
+        mktValAll = []
+
+        #Read file and variables
+        for line in readFile(posOffsetOverlapTickersFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            proxyObjId = words[2]
+            bucket = words[3]
+            tickerId = words[4]
+            mktVal = words[5]
+
+            posIdAll.append(posId)
+            proxyObjIdAll.append(proxyObjId)
+            tickerIdAll.append(tickerId)
+            mktValAll.append(mktVal)
+
+            ##### check missing rate for posId, proxyObjId, tickerId and mktVal #####
+            if posId.strip() == '':
+                msPosId += 1
+
+            if proxyObjId.strip() == '':
+                msProxyObjId += 1
+
+            if tickerId.strip() == '':
+                msTickerId += 1
+
+            if mktVal.strip() == '':
+                msMktVal += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### check missing rate for each numeric fields #####
+            numMktVal.add(mktVal)
+
+        self.reportPosOffsetOverlapTickers(posIdAll, proxyObjIdAll, tickerIdAll, mktValAll, msPosId, msProxyObjId, msTickerId, msMktVal, numMktVal)
+
+    def reportPosOffsetOverlapTickers(self, posIdAll, proxyObjIdAll, tickerIdAll, mktValAll, msPosId, msProxyObjId, msTickerId, msMktVal, numMktVal):
+
+        ws = self.wb.add_worksheet('posSTOffsetOverlapTickers')
+        ws.hide_gridlines(2)
+        ws.write('B1', 'posId')
+        ws.write('C1', 'proxyObjId')
+        ws.write('D1', 'tickerId')
+        ws.write('E1', 'mktVal')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msPosId)
+        ws.write('C2', msProxyObjId)
+        ws.write('D2', msTickerId)
+        ws.write('E2', msMktVal)
+
+        row = 3
+        col = 2
+        mar = 0
+
+        mar = mar + 2
+
+        ws.write_column(mar + 1, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(mar + 1, 1, ['mktVal'] + numMktVal.out())
+
+        #self.formatset(ws)
+
+    def checkPosPortSummaryTopStocks(self):
+        posPortSummaryTopStocksFile = ''.join([self.oDir, '/', posSTPortSummaryTopStocks])
+
+        msPosId = 0
+        msTickerId = 0
+
+        numNetWeight = Numeric()
+        numLiquidity = Numeric()
+        numVolatility = Numeric()
+        numPnlDtd = Numeric()
+        numPnlMtd = Numeric()
+        numPnlYtd = Numeric()
+
+        nBucket = {}
+
+        #Read file and variables
+        for line in readFile(posPortSummaryTopStocksFile):
+            words = line.strip().split(dlm)
+            posId = words[1]
+            tickerId = words[2]
+            bucket = words[3]
+            netWeight = words[4]
+            liquidity = words[5]
+            volatility = words[6]
+            pnlDtd = words[7]
+            pnlMtd = words[8]
+            pnlYtd = words[9]
+
+            ##### check missing rate for pos Id and ticker Id #####
+            if posId.strip() == '':
+                msPosId += 1
+            if tickerId.strip() == '':
+                msTickerId += 1
+
+            if posId not in self.posIdList:
+                continue
+
+            ##### Check # of records in each bucket #####
+            if bucket not in nBucket :
+                nBucket[bucket] = 1
+            else :
+                nBucket[bucket] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numNetWeight.add(netWeight)
+            numLiquidity.add(liquidity)
+            numVolatility.add(volatility)
+            numPnlDtd.add(pnlDtd)
+            numPnlMtd.add(pnlMtd)
+            numPnlYtd.add(pnlYtd)
+
+        self.reportPosPortSummaryTopStocks(msPosId, msTickerId, nBucket, numNetWeight, numLiquidity, numVolatility, numPnlDtd, numPnlMtd, numPnlYtd)
+
+    def reportPosPortSummaryTopStocks(self, msPosId, msTickerId, nBucket, numNetWeight, numLiquidity, numVolatility, numPnlDtd, numPnlMtd, numPnlYtd) :
+
+        ws = self.wb.add_worksheet('posStPortSummaryTopStocks')
+        ws.hide_gridlines(2)
+        ws.write('A1', 'Check missing rate of position ID and Ticker ID')
+        ws.write('B2', 'posId')
+        ws.write('C2', 'tickerId')
+        ws.write('A3', 'Missing')
+        ws.write('B3', msPosId)
+        ws.write('C3', msTickerId)
+
+        ws.write('A6', 'Check # of records in each bucket')
+        ws.write('A7', 'Bucket')
+        ws.write('B7', '# of records')
+        row = 7
+        for i in nBucket:
+            ws.write(row, 0, i)
+            ws.write(row, 1, nBucket[i])
+            row += 1
+
+        ws.write(row + 1,0, 'Check missing rate and general statistics for each numerical fields')
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['netWeight'] + numNetWeight.out())
+        ws.write_column(row + 2, 2, ['liquidity'] + numLiquidity.out())
+        ws.write_column(row + 2, 3, ['volatility'] + numVolatility.out())
+        ws.write_column(row + 2, 4, ['pnlDtd'] + numPnlDtd.out())
+        ws.write_column(row + 2, 5, ['pnlMtd'] + numPnlMtd.out())
+        ws.write_column(row + 2, 6, ['pnlYtd'] + numPnlYtd.out())
+
+        #self.formatset(ws)
+
+    def checkPosVaR(self):
+        posVaRFile = ''.join([self.oDir, '/', posSTVaR])
+
+        msIdx = 0
+        msViewName = 0
+        msRowGroup = 0
+        msLevel = 0
+        msLevelName = 0
+        msDrillName = 0
+
+        numPvTotalDollar = Numeric()
+        numMcTotalDollar = Numeric()
+        numCommodityRiskDollar = Numeric()
+        numEquityRiskDollar = Numeric()
+        numFxRiskDollar = Numeric()
+        numIrTotalRiskDollar = Numeric()
+        numIrMarketRiskDollar = Numeric()
+        numIssuerSpecificRiskDollar = Numeric()
+        numVegaRiskDollar = Numeric()
+        numMvarDollar = Numeric()
+        numIvarDollar = Numeric()
+        numCvarDollar = Numeric()
+        numMcTotalPercent = Numeric()
+        numEtl1D = Numeric()
+        numEtlContribution1D = Numeric()
+        numEtlIncremental1D = Numeric()
+        numEtlMarginal1D = Numeric()
+
+
+        nViewName = {}
+        nRowGroup = {}
+        nLevel = {}
+        nLevelName = {}
+        nDrillName = {}
+
+        #Read file and variables
+        for line in readFile(posVaRFile):
+            words = line.strip().split(dlm)
+            idx = words[1]
+            date = words[2]
+            viewName = words[3]
+            rowGroup = words[4]
+            level = words[5]
+            levelName = words[6]
+            drillName = words[7]
+            parent = words[8]
+            pvTotalDollar = words[9]
+            mcTotalDollar = words[10]
+            commodityRiskDollar = words[11]
+            equityRiskDollar = words[12]
+            fxRiskDollar = words[13]
+            irTotalRiskDollar = words[14]
+            irMarketRiskDollar = words[15]
+            issuerSpecificRiskDollar = words[16]
+            vegaRiskDollar = words[17]
+            mvarDollar = words[18]
+            ivarDollar = words[19]
+            cvarDollar = words[20]
+            mcTotalPercent = words[21]
+            etl1D = words[22]
+            etlContribution1D = words[23]
+            etlIncremental1D = words[24]
+            etlMarginal1D = words[25]
+            clientId = words[26]
+
+            ##### check missing rate of idx,viewName,rowGroup,level,levelName,and drillName #####
+            if idx.strip() == '':
+                msIdx += 1
+            if viewName.strip() == '':
+                msViewName += 1
+            if rowGroup.strip() == '':
+                msRowGroup += 1
+            if level.strip() == '':
+                msLevel += 1
+            if levelName.strip() == '':
+                msLevelName += 1
+            if drillName.strip() == '':
+                msDrillName += 1
+
+            ##### List all category with frequency for fields: viewName,rowGroup,level,levelName,and drillName #####
+            if viewName not in nViewName :
+                nViewName[viewName] = 1
+            else :
+                nViewName[viewName] += 1
+
+            if rowGroup not in nRowGroup :
+                nRowGroup[rowGroup] = 1
+            else :
+                nRowGroup[rowGroup] += 1
+
+            if level not in nLevel :
+                nLevel[level] = 1
+            else :
+                nLevel[level] += 1
+
+            if levelName not in nLevelName :
+                nLevelName[levelName] = 1
+            else :
+                nLevelName[levelName] += 1
+
+            if drillName not in nDrillName :
+                nDrillName[drillName] = 1
+            else :
+                nDrillName[drillName] += 1
+
+            ##### Check Date range #####
+
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numPvTotalDollar.add(pvTotalDollar)
+            numMcTotalDollar.add(mcTotalDollar)
+            numCommodityRiskDollar.add(commodityRiskDollar)
+            numEquityRiskDollar.add(equityRiskDollar)
+            numFxRiskDollar.add(fxRiskDollar)
+            numIrTotalRiskDollar.add(irTotalRiskDollar)
+            numIrMarketRiskDollar.add(irMarketRiskDollar)
+            numIssuerSpecificRiskDollar.add(issuerSpecificRiskDollar)
+            numVegaRiskDollar.add(vegaRiskDollar)
+            numMvarDollar.add(mvarDollar)
+            numIvarDollar.add(ivarDollar)
+            numCvarDollar.add(cvarDollar)
+            numMcTotalPercent.add(mcTotalPercent)
+            numEtl1D.add(etl1D)
+            numEtlContribution1D.add(etlContribution1D)
+            numEtlIncremental1D.add(etlIncremental1D)
+            numEtlMarginal1D.add(etlMarginal1D)
+
+        self.reportPosVaR(msIdx, msViewName, msRowGroup, msLevel, msLevelName, msDrillName, nViewName, nRowGroup, nLevel, nLevelName, nDrillName, numPvTotalDollar,\
+            numMcTotalDollar, numCommodityRiskDollar, numEquityRiskDollar,numFxRiskDollar, numIrTotalRiskDollar, numIrMarketRiskDollar, numIssuerSpecificRiskDollar,\
+            numVegaRiskDollar, numMvarDollar, numIvarDollar, numCvarDollar, numMcTotalPercent, numEtl1D, numEtlContribution1D, numEtlIncremental1D, numEtlMarginal1D )
+
+
+    def reportPosVaR(self, msIdx, msViewName, msRowGroup, msLevel, msLevelName, msDrillName, nViewName, nRowGroup, nLevel, nLevelName, nDrillName, numPvTotalDollar,\
+            numMcTotalDollar, numCommodityRiskDollar, numEquityRiskDollar,numFxRiskDollar, numIrTotalRiskDollar, numIrMarketRiskDollar, numIssuerSpecificRiskDollar,\
+            numVegaRiskDollar, numMvarDollar, numIvarDollar, numCvarDollar, numMcTotalPercent, numEtl1D, numEtlContribution1D, numEtlIncremental1D, numEtlMarginal1D ) :
+
+        ws = self.wb.add_worksheet('posStVaR')
+        ws.hide_gridlines(2)
+        ws.write('A1', 'check missing rate of idx,viewName,rowGroup,level,levelName,and drillName')
+        ws.write('B2', 'idx')
+        ws.write('C2', 'viewName')
+        ws.write('D2', 'rowGroup')
+        ws.write('E2', 'level')
+        ws.write('F2', 'levelName')
+        ws.write('G2', 'drillName')
+
+        ws.write('A3', 'Missing')
+        ws.write('B3', msIdx)
+        ws.write('C3', msViewName)
+        ws.write('D3', msRowGroup)
+        ws.write('E3', msLevel)
+        ws.write('F3', msLevelName)
+        ws.write('G3', msDrillName)
+
+        ws.write('A6', 'List all category with frequency for fields: viewName,rowGroup,level,levelName,and drillName')
+        row = 8
+        ws.write(row-1, 1, 'Categoty')
+        ws.write(row-1, 2, 'frequency')
+        ws.write(row, 0, 'viewName')
+        for i in nViewName:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nViewName[i])
+            row += 1
+
+        ws.write(row, 0, 'rowGroup')
+        for i in nRowGroup:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nRowGroup[i])
+            row += 1
+
+        ws.write(row, 0, 'level')
+        for i in nLevel:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nLevel[i])
+            row += 1
+
+        ws.write(row, 0, 'levelName')
+        for i in nLevelName:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nLevelName[i])
+            row += 1
+
+        ws.write(row, 0, 'drillName')
+        for i in nDrillName:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nDrillName[i])
+            row += 1
+
+        ws.write(row + 1,0, 'Check missing rate and general statistics for each numerical fields')
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['pvTotalDollar'] + numPvTotalDollar.out())
+        ws.write_column(row + 2, 2, ['mcTotalDollar'] + numMcTotalDollar.out())
+        ws.write_column(row + 2, 3, ['commodityRiskDollar'] + numCommodityRiskDollar.out())
+        ws.write_column(row + 2, 4, ['equityRiskDollar'] + numEquityRiskDollar.out())
+        ws.write_column(row + 2, 5, ['fxRiskDollar'] + numFxRiskDollar.out())
+        ws.write_column(row + 2, 6, ['irTotalRiskDollar'] + numIrTotalRiskDollar.out())
+        ws.write_column(row + 2, 7, ['irMarketRiskDollar'] + numIrMarketRiskDollar.out())
+        ws.write_column(row + 2, 8, ['issuerSpecificRiskDollar'] + numIssuerSpecificRiskDollar.out())
+        ws.write_column(row + 2, 9, ['vegaRiskDollar'] + numVegaRiskDollar.out())
+        ws.write_column(row + 2, 10, ['mvarDollar'] + numMvarDollar.out())
+        ws.write_column(row + 2, 11, ['ivarDollar'] + numIvarDollar.out())
+        ws.write_column(row + 2, 12, ['cvarDollar'] + numCvarDollar.out())
+        ws.write_column(row + 2, 13, ['mcTotalPercent'] + numMcTotalPercent.out())
+        ws.write_column(row + 2, 14, ['mcTotalPercent'] + numMcTotalPercent.out())
+        ws.write_column(row + 2, 15, ['etl1D'] + numEtl1D.out())
+        ws.write_column(row + 2, 16, ['etlContribution1D'] + numEtlContribution1D.out())
+        ws.write_column(row + 2, 17, ['etlIncremental1D'] + numEtlIncremental1D.out())
+        ws.write_column(row + 2, 18, ['etlMarginal1D'] + numEtlMarginal1D.out())
+
+        #self.formatset(ws)
+
+    def checkPosScenarios(self):
+        posScenariosFile = ''.join([self.oDir, '/', posSTScenarios])
+
+        msObjId = 0
+        msDateId = 0
+        msScenarioId = 0
+
+        numDollarChange = Numeric()
+
+        nScenarioId = {}
+
+        #Read file and variables
+        for line in readFile(posScenariosFile):
+            words = line.strip().split(dlm)
+            objId = words[1]
+            dateId = words[2]
+            scenarioId = words[3]
+            dollarChange = words[4]
+            updated = words[5]
+
+            ##### check missing rate of Object Id, Date Id and Scenario ID #####
+            if objId.strip() == '':
+                msObjId += 1
+            if dateId.strip() == '':
+                msDateId += 1
+            if scenarioId.strip() == '':
+                msScenarioId += 1
+
+            ##### Check Scenario ID frequency #####
+            if scenarioId not in nScenarioId :
+                nScenarioId[scenarioId] = 1
+            else :
+                nScenarioId[scenarioId] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numDollarChange.add(dollarChange)
+
+
+        self.reportPosScenarios(msObjId, msDateId, msScenarioId, nScenarioId, numDollarChange)
+
+    def reportPosScenarios(self, msObjId, msDateId, msScenarioId, nScenarioId, numDollarChange) :
+
+        ws = self.wb.add_worksheet('posStScenarios')
+        ws.hide_gridlines(2)
+        ws.write('A1', 'Check missing rate of Object Id, Date Id and Scenario ID')
+        ws.write('B2', 'objId')
+        ws.write('C2', 'dateId')
+        ws.write('D2', 'scenarioId')
+        ws.write('A3', 'Missing')
+        ws.write('B3', msObjId)
+        ws.write('C3', msDateId)
+        ws.write('C3', msScenarioId)
+
+        ws.write('A6', 'Check Scenario ID frequency ')
+        ws.write('A7', 'scenarioId')
+        ws.write('B7', 'frequency')
+        row = 7
+        for i in nScenarioId:
+            ws.write(row, 0, i)
+            ws.write(row, 1, nScenarioId[i])
+            row += 1
+
+        ws.write(row + 1,0, 'Check missing rate and general statistics for each numerical fields')
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['dollarChange'] + numDollarChange.out())
+
+        #self.formatset(ws)
+
+    def checkPosLookbackHistorical(self):
+        posLookbackHistoricalFile = ''.join([self.oDir, '/', posStLookbackHistorical])
+
+        msObjId = 0
+        msDateId = 0
+
+        numLongShortRatio = Numeric()
+        numTrendSlope = Numeric()
+
+        #Read file and variables
+        for line in readFile(posLookbackHistoricalFile):
+            words = line.strip().split(dlm)
+            objId = words[1]
+            dateId = words[2]
+            longShortRatio = words[3]
+            trendSlope = words[4]
+
+            ##### check missing rate of Object Id, and Date Id  #####
+            if objId.strip() == '':
+                msObjId += 1
+            if dateId.strip() == '':
+                msDateId += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numLongShortRatio.add(longShortRatio)
+            numTrendSlope.add(trendSlope)
+
+        self.reportPosLookbackHistorical(msObjId, msDateId, numLongShortRatio, numTrendSlope)
+
+    def reportPosLookbackHistorical(self, msObjId, msDateId, numLongShortRatio, numTrendSlope) :
+
+        ws = self.wb.add_worksheet('posStLookbackHistorical')
+        ws.hide_gridlines(2)
+        ws.write('A1', 'Check missing rate of Object Id, and Date Id ')
+        ws.write('B2', 'objId')
+        ws.write('C2', 'dateId')
+        ws.write('A3', 'Missing')
+        ws.write('B3', msObjId)
+        ws.write('C3', msDateId)
+
+        row = 7
+        ws.write(row ,0, 'Check missing rate and general statistics for each numerical fields')
+        ws.write_column(row+1 , 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row+1 , 1, ['longShortRatio'] + numLongShortRatio.out())
+        ws.write_column(row+1 , 2, ['trendSlope'] + numTrendSlope.out())
+
+        #self.formatset(ws)
+
+    #Generate the whole list of ret Id
+    def generateRetIdList(self):
+        retMasterFile = ''.join([self.oDir, '/', retMaster])
+
+        managers = {}
+        portfolios = {}
+
+        idAll = []
+
+        for line in readFile(retMasterFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            irr = words[1]
+            statusId = words[2]
+            proxyId = words[3]
+            processedTimestamp = words[4]
+            source = words[5]
+            isBacktest = words[6]
+            isMap = words[7]
+            isNra = words[8]
+            isActive = words[9]
+            isGross = words[10]
+            fileId = words[11]
+            isExcluded = words[12]
+            dateId = words[13]
+            objId = words[14]
+            generatedTimestamp = words[15]
+
+            idAll.append(id)
+
+            ##### calculate # of positions id each day under conditions isActive = 1 and statusId = 11 #####
+            if dateId not in self.dates or isActive != '1' or statusId != '11':
+                continue
+
+            self.retIdList.append(id)
+            self.retIdMap[id] = [objId, dateId]
+
+            ##### calculate # of portfolios and managers of each day #####
+            if objId in self.managers:
+                if dateId not in managers:
+                    managers[dateId] = {}
+                if isNra not in managers[dateId]:
+                    managers[dateId][isNra] = 0
+                managers[dateId][isNra] += 1
+            if objId in self.portfolios or objId in self.customportfolios:
+                if dateId not in portfolios:
+                    portfolios[dateId] = {}
+                if isNra not in portfolios[dateId]:
+                    portfolios[dateId][isNra] = 0
+                portfolios[dateId][isNra] += 1
+
+        self.reportRetMaster(managers, portfolios, idAll)
+
+    def reportRetMaster(self, managers, portfolios, idAll):
+
+        ##### check whether id is unique #####
+        uniqId = set(idAll)
+        nUniqId = len(uniqId)
+        nTotId = len(idAll)
+
+        ##### Write Report for Position Master table #####
+        ws = self.wb.add_worksheet('retMaster')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retMaster'
+        ws.write('A2', 'Managers')
+        ws.write('A4', 'Portfolios')
+        ws.write('B1', 'DateId')
+
+        j = 0
+        for i in range(len(self.dates)) :
+            ws.write(0, i + 2, self.dateMap[self.dates[i]])
+            j = 1
+            for isNra in managers[self.dates[i]]:
+                ws.write(j, 1, isNra)
+                ws.write(j, i + 2, managers[self.dates[i]][isNra])
+                j += 1
+            for isNra in portfolios[self.dates[i]]:
+                ws.write(j, 1, isNra)
+                ws.write(j, i + 2, portfolios[self.dates[i]][isNra])
+                j += 1
+
+        ws.write('A7', '# of unique id')
+        ws.write('A8', nUniqId)
+        ws.write('B7', '# of total records')
+        ws.write('B8', nTotId)
+
+    def checkRetMarketsImpliedCorr(self):
+        retMarketsImpliedCorrFile = ''.join([self.oDir, '/', retStMarketsImpliedCorr])
+
+        msDateId = 0
+        msBucketId = 0
+        msN = 0
+        msImpliedCorr = 0
+
+        nBucketId = {}
+        nN = {}
+
+        #Read files and variables
+        for line in readFile(retMarketsImpliedCorrFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            dateId = words[1]
+            bucketId = words[2]
+            n = words[3]
+            impliedCorr = words[4]
+
+            #if id not in self.retIdList:
+            #    continue
+
+            ##### check missing rate of dateId, bucketId, n, impliedCorr #####
+            if dateId.strip() == '':
+                msDateId += 1
+            if bucketId.strip() == '':
+                msBucketId += 1
+            if n.strip() == '':
+                msN += 1
+            if impliedCorr.strip() == '':
+                msImpliedCorr += 1
+
+            ##### List all category with frequency for fields: bucketId and n #####
+            if bucketId not in nBucketId :
+                nBucketId[bucketId] = 1
+            else :
+                nBucketId[bucketId] += 1
+
+            if n not in nN :
+                nN[n] = 1
+            else :
+                nN[n] += 1
+
+            ##### Check Date range #####
+
+
+        self.reportRetMarketsImpliedCorr(msDateId, msBucketId, msN, msImpliedCorr, nBucketId, nN)
+
+
+    def reportRetMarketsImpliedCorr(self, msDateId, msBucketId, msN, msImpliedCorr, nBucketId, nN) :
+
+        ws = self.wb.add_worksheet('retMarketsImpliedCorr')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retMarketsImpliedCorr'
+        ws.write('B1', 'dateId')
+        ws.write('C1', 'bucketId')
+        ws.write('D1', 'n')
+        ws.write('E1', 'impliedCorr')
+
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msDateId)
+        ws.write('C2', msBucketId)
+        ws.write('D2', msN)
+        ws.write('E2', msImpliedCorr)
+
+        mar = 1
+        row = mar + 2
+
+        #Summarize the frequency for each bucketId and n
+        ws.write(row, 1, 'Category')
+        ws.write(row, 2, 'frequency')
+        ws.write(row + 1, 0, 'bucketId')
+        row = row + 1
+
+        for i in nBucketId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nBucketId[i])
+            row += 1
+
+        ws.write(row, 0, 'n')
+        for i in nN:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nN[i])
+            row += 1
+
+        #self.formatset(ws)
+
+    def checkRetMarketsRelDispersion(self):
+        retMarketsRelDispersionFile = ''.join([self.oDir, '/', retStMarketsRelDispersion])
+
+        msDateId = 0
+        msBucketId = 0
+        msN = 0
+        msVol = 0
+
+        nBucketId = {}
+        nN = {}
+
+        #Read files and variables
+        for line in readFile(retMarketsRelDispersionFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            dateId = words[1]
+            bucketId = words[2]
+            n = words[3]
+            vol = words[4]
+
+            #if id not in self.retIdList:
+            #    continue
+
+            ##### check missing rate of dateId, bucketId, n, Vol #####
+            if dateId.strip() == '':
+                msDateId += 1
+            if bucketId.strip() == '':
+                msBucketId += 1
+            if n.strip() == '':
+                msN += 1
+            if vol.strip() == '':
+                msVol += 1
+
+            ##### List all category with frequency for fields: bucketId and n #####
+            if bucketId not in nBucketId :
+                nBucketId[bucketId] = 1
+            else :
+                nBucketId[bucketId] += 1
+
+            if n not in nN :
+                nN[n] = 1
+            else :
+                nN[n] += 1
+
+            ##### Check Date range #####
+
+
+        self.reportRetMarketsRelDispersion(msDateId, msBucketId, msN, msVol, nBucketId, nN)
+
+
+    def reportRetMarketsRelDispersion(self, msDateId, msBucketId, msN, msVol, nBucketId, nN) :
+
+        ws = self.wb.add_worksheet('retMarketsRelDispersion')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retMarketsRelDispersion'
+        ws.write('B1', 'dateId')
+        ws.write('C1', 'bucketId')
+        ws.write('D1', 'n')
+        ws.write('E1', 'vol')
+
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msDateId)
+        ws.write('C2', msBucketId)
+        ws.write('D2', msN)
+        ws.write('E2', msVol)
+
+        mar = 1
+        row = mar + 2
+
+        ws.write(row, 1, 'Category')
+        ws.write(row, 2, 'frequency')
+        ws.write(row + 1, 0, 'bucketId')
+        row = row + 1
+        for i in nBucketId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nBucketId[i])
+            row += 1
+
+        ws.write(row, 0, 'n')
+        for i in nN:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nN[i])
+            row += 1
+
+        #self.formatset(ws)
+
+    def checkRetReturnsAvgCorrVol(self):
+        retReturnsAvgCorrVolFile = ''.join([self.oDir, '/', retStReturnsAvgCorrVol])
+
+        msRetId = 0
+        msWindowId = 0
+
+        numCorrelation = Numeric()
+        numVolatility = Numeric()
+        numVolume = Numeric()
+
+        nWindowId = {}
+
+        #Read files and variables
+        for line in readFile(retReturnsAvgCorrVolFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            retId = words[1]
+            correlation = words[2]
+            volatility = words[3]
+            volume = words[4]
+            windowId = words[5]
+
+            ##### check missing rate for ret Id and window Id #####
+            if retId.strip() == '':
+                msRetId += 1
+            if windowId.strip() == '':
+                msWindowId += 1
+
+            #if id not in self.retIdList:
+            #    continue
+
+            ##### Check # of records in each window Id #####
+            if windowId not in nWindowId :
+                nWindowId[windowId] = 1
+            else :
+                nWindowId[windowId] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numCorrelation.add(correlation)
+            numVolatility.add(volatility)
+            numVolume.add(volume)
+
+        self.reportRetRetunsAvgCorrVol(msRetId, msWindowId, nWindowId, numCorrelation, numVolatility, numVolume)
+
+    def reportRetRetunsAvgCorrVol(self, msRetId, msWindowId, nWindowId, numCorrelation, numVolatility, numVolume) :
+
+        ws = self.wb.add_worksheet('retSTReturnsAvgCorrVol')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retSTReturnsAvgCorrVol'
+        ws.write('B1', 'retId')
+        ws.write('C1', 'windowId')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msRetId)
+        ws.write('C2', msWindowId)
+
+        row = 3
+
+        ws.write(row, 1, 'Category')
+        ws.write(row, 2, 'Frequency')
+        row = row + 1
+        ws.write(row, 0, 'windowId')
+        for i in nWindowId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nWindowId[i])
+            row += 1
+
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['correlation'] + numCorrelation.out())
+        ws.write_column(row + 2, 2, ['volatility'] + numVolatility.out())
+
+        #self.formatset(ws)
+
+
+    def checkRetStressCorr(self):
+        retStressCorrFile = ''.join([self.oDir, '/', retStReturnsStressCorr])
+
+        msRetId = 0
+        msBenchmarkObjId = 0
+        msDateId = 0
+
+        numCorrelation = Numeric()
+
+        nObjType = {}
+        nBenchmarkObjId = {}
+        nDateId = {}
+        nN = {}
+
+        #Read files and variables
+        for line in readFile(retStressCorrFile):
+            words = line.strip().split(dlm)
+            retId = words[1]
+            benchmarkObjId = words[2]
+            dateId = words[3]
+            correlation = words[4]
+            n = words[5]
+            updated = words[6]
+
+            ##### Check missing rate of Return Id, Benchmark Obj Id and Date Id  #####
+            if retId.strip() == '':
+                msRetId += 1
+            if benchmarkObjId.strip() == '':
+                msBenchmarkObjId += 1
+            if dateId.strip() == '':
+                msDateId += 1
+
+            if retId not in self.retIdList:
+                continue
+
+            ##### Check frequency of each objType, benchmarkObjId, dateId, n  #####
+            objId = self.retIdMap[retId][0]
+            if objId not in nObjType :
+                nObjType[objId] = 1
+            else :
+                nObjType[objId] += 1
+
+            if benchmarkObjId not in nBenchmarkObjId :
+                nBenchmarkObjId[benchmarkObjId] = 1
+            else :
+                nBenchmarkObjId[benchmarkObjId] += 1
+
+            if dateId not in nDateId :
+                nDateId[dateId] = 1
+            else :
+                nDateId[dateId] += 1
+
+            if n not in nN :
+                nN[n] = 1
+            else :
+                nN[n] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numCorrelation.add(correlation)
+
+        self.reportRetStressCorr(msRetId, msBenchmarkObjId, msDateId, nObjType, nBenchmarkObjId, nDateId, nN, numCorrelation)
+
+    def reportRetStressCorr(self, msRetId, msBenchmarkObjId, msDateId, nObjType, nBenchmarkObjId, nDateId, nN, numCorrelation) :
+
+        ws = self.wb.add_worksheet('retStReturnsStressCorr')
+        ws.hide_gridlines(2)
+        ws.write('A1', 'Check missing rate of Return Id, Benchmark Obj Id and Date Id')
+        ws.write('B2', 'retId')
+        ws.write('C2', 'benchmarkObjId')
+        ws.write('D2', 'dateId')
+        ws.write('A3', 'Missing')
+        ws.write('B3', msRetId)
+        ws.write('C3', msBenchmarkObjId)
+        ws.write('D3', msDateId)
+
+        ws.write('A6', 'Check frequency of each objType, benchmarkObjId, dateId, n')
+        row = 8
+        ws.write(row-1, 1, 'Categoty')
+        ws.write(row-1, 2, 'frequency')
+        ws.write(row, 0, 'objType')
+
+        #Check the frequency for objType, benchmarkObjId, dateId, n
+        for i in nObjType:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nObjType[i])
+            row += 1
+
+        ws.write(row, 0, 'benchmarkObjId')
+        for i in nBenchmarkObjId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nBenchmarkObjId[i])
+            row += 1
+
+        ws.write(row, 0, 'dateId')
+        for i in nDateId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nDateId[i])
+            row += 1
+
+        ws.write(row, 0, 'n')
+        for i in nN:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nN[i])
+            row += 1
+
+        ws.write(row +1 ,0, 'Check missing rate and general statistics for each numerical fields')
+        ws.write_column(row+2 , 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row+2 , 1, ['correlation'] + numCorrelation.out())
+
+        #self.formatset(ws)
+
+    def checkRetStats(self):
+        retStatsFile = ''.join([self.oDir, '/', retStReturnsStats])
+
+        msRetId = 0
+        msStatId = 0
+        msWindowId = 0
+
+        numValue = {}
+
+        nStatId = {}
+        nWindowId = {}
+
+        #Read files and variables
+        for line in readFile(retStatsFile):
+            words = line.strip().split(dlm)
+            retId = words[1]
+            statId = words[2]
+            windowId = words[3]
+            value = words[4]
+            statWindowsCombin = str('statId = ') + str(statId) + str('windowId = ') + str(windowId)
+
+            ##### Check missing rate of Return Id, Stat Id and Window Id  #####
+            if retId.strip() == '':
+                msRetId += 1
+            if statId.strip() == '':
+                msStatId += 1
+            if windowId.strip() == '':
+                msWindowId += 1
+
+            if retId not in self.retIdList:
+                continue
+
+            ##### Check frequency of each Stat Id and Window Id  #####
+
+            if statId not in nStatId :
+                nStatId[statId] = 1
+            else :
+                nStatId[statId] += 1
+
+            if windowId not in nWindowId :
+                nWindowId[windowId] = 1
+            else :
+                nWindowId[windowId] += 1
+
+            ##### Check missing rate and general statistics for value in each (statId, windowId)  #####
+            if statWindowsCombin not in numValue :
+                numValue[statWindowsCombin] = Numeric()
+                numValue[statWindowsCombin].add(value)
+            else :
+                numValue[statWindowsCombin].add(value)
+
+        self.reportRetStats(msRetId, msStatId, msWindowId, nStatId, nWindowId, numValue)
+
+    def reportRetStats(self, msRetId, msStatId, msWindowId, nStatId, nWindowId, numValue) :
+
+        ws = self.wb.add_worksheet('retStReturnsStats')
+        ws.hide_gridlines(2)
+        ws.write('A1', ' Check missing rate of Return Id, Stat Id and Window Id ')
+        ws.write('B2', 'retId')
+        ws.write('C2', 'statId')
+        ws.write('D2', 'windowId')
+        ws.write('A3', 'Missing')
+        ws.write('B3', msRetId)
+        ws.write('C3', msStatId)
+        ws.write('D3', msWindowId)
+
+        ws.write('A6', 'Check frequency of each Stat Id and Window Id')
+        row = 8
+        ws.write(row-1, 1, 'Categoty')
+        ws.write(row-1, 2, 'frequency')
+        ws.write(row, 0, 'statId')
+        for i in nStatId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nStatId[i])
+            row += 1
+
+        ws.write(row, 0, 'windowId')
+        for i in nWindowId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nWindowId[i])
+            row += 1
+
+        ws.write(row +1 ,0, 'Check missing rate and general statistics for value in each (statId, windowId)')
+        col = 1
+        for i in numValue :
+            ws.write_column(row+2 , 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        #    print [numValue]
+        #    ws.write_column(row+2 , col, [numValue])
+            ws.write_column(row+3 , col,  numValue[i].out())
+            col += 1
+
+        #self.formatset(ws)
+
+    def checkRetBetasCorrelations(self):
+        retBetasCorrelationsFile = ''.join([self.oDir, '/', retStReturnsBetasCorrelations])
+
+        msRetId = 0
+        msObjBenchmark = 0
+        msWindowId = 0
+
+        numCorrelation = Numeric()
+        numBeta = Numeric()
+        numAlpha = Numeric()
+
+        nObjType = {}
+        nWindowId = {}
+        nN = {}
+
+        #Read files and variables
+        for line in readFile(retBetasCorrelationsFile):
+            words = line.strip().split(dlm)
+            retId = words[0]
+            objIdBenchmark = words[1]
+            windowId = words[2]
+            correlation = words[3]
+            beta = words[4]
+            alpha = words[5]
+            n = words[6]
+
+            ##### Check missing rate of Return Id, objId Benchmark and Window Id  #####
+            if retId.strip() == '':
+                msRetId += 1
+            if objIdBenchmark.strip() == '':
+                msObjBenchmark += 1
+            if windowId.strip() == '':
+                msWindowId += 1
+
+            if retId not in self.retIdList:
+                continue
+
+            ##### Check frequency of each Obj Type, window ID and n  #####
+            objId = self.retIdMap[retId][0]
+            if objId not in nObjType :
+                nObjType[objId] = 1
+            else :
+                nObjType[objId] += 1
+
+            if windowId not in nWindowId :
+                nWindowId[windowId] = 1
+            else :
+                nWindowId[windowId] += 1
+
+            if n not in nN :
+                nN[n] = 1
+            else :
+                nN[n] += 1
+
+            ##### Check missing rate and general statistics for each numeric fields #####
+            numCorrelation.add(correlation)
+            numBeta.add(beta)
+            numAlpha.add(alpha)
+
+        self.reportRetBetasCorrelations(msRetId, msObjBenchmark, msWindowId, nObjType, nWindowId, nN, numCorrelation, numBeta, numAlpha)
+
+    def reportRetBetasCorrelations(self, msRetId, msObjBenchmark, msWindowId, nObjType, nWindowId, nN, numCorrelation, numBeta, numAlpha) :
+
+        ws = self.wb.add_worksheet('retStReturnsBetasCorrelations')
+        ws.hide_gridlines(2)
+        ws.write('A1', ' Check missing rate of Return Id, objId Benchmark and Window Id ')
+        ws.write('B2', 'retId')
+        ws.write('C2', 'objIdBenchmark')
+        ws.write('D2', 'windowId')
+        ws.write('A3', 'Missing')
+        ws.write('B3', msRetId)
+        ws.write('C3', msObjBenchmark)
+        ws.write('D3', msWindowId)
+
+        #outputs
+        ws.write('A6', 'Check frequency of each Obj Type, window ID and n')
+        row = 8
+        ws.write(row-1, 1, 'Categoty')
+        ws.write(row-1, 2, 'frequency')
+        ws.write(row, 0, 'objType')
+        for i in nObjType:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nObjType[i])
+            row += 1
+
+        ws.write(row, 0, 'windowId')
+        for i in nWindowId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nWindowId[i])
+            row += 1
+
+        ws.write(row, 0, 'n')
+        for i in nN:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nN[i])
+            row += 1
+
+        ws.write(row +1 ,0, 'Check missing rate and general statistics for each numeric fields')
+        ws.write_column(row+2 , 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row+2 , 1, ['correlation'] + numCorrelation.out())
+        ws.write_column(row+2 , 2, ['beta'] + numBeta.out())
+        ws.write_column(row+2 , 3, ['alpha'] + numAlpha.out())
+
+        #self.formatset(ws)
+
+    def checkRetVolatility(self):
+        retVolatilityFile = ''.join([self.oDir, '/', retStReturnsVolatility])
+
+        msRetId = 0
+        msManagerObjId = 0
+        msStrategyId = 0
+
+        numDailyRiskStd = Numeric()
+        numDailyVol3m = Numeric()
+        numDailyVol1y = Numeric()
+        numAnnualizedRiskStd = Numeric()
+        numAnnualizedVol3m = Numeric()
+        numAnnualizedVol1y = Numeric()
+
+        nObjType = {}
+
+        #Read files and variables
+        for line in readFile(retVolatilityFile):
+            words = line.strip().split(dlm)
+            retId = words[1]
+            managerObjId = words[2]
+            strategyId = words[3]
+            dailyRiskStd = words[4]
+            dailyVol3m = words[5]
+            dailyVol1y = words[6]
+            annualizedRiskStd = words[7]
+            annualizedVol3m = words[8]
+            annualizedVol1y = words[9]
+
+            ##### Check missing rate of Return Id, ManagerObjId and Strategy Id  #####
+            if retId.strip() == '':
+                msRetId += 1
+            if managerObjId.strip() == '':
+                msManagerObjId += 1
+            if strategyId.strip() == '':
+                msStrategyId += 1
+
+            if retId not in self.retIdList:
+                continue
+
+            ##### Check frequency of each Obj Type #####
+            objId = self.retIdMap[retId][0]
+            if objId not in nObjType :
+                nObjType[objId] = 1
+            else :
+                nObjType[objId] += 1
+
+            ##### Check missing rate and general statistics for each numeric fields #####
+            numDailyRiskStd.add(dailyRiskStd)
+            numDailyVol3m.add(dailyVol3m)
+            numDailyVol1y.add(dailyVol1y)
+            numAnnualizedRiskStd.add(annualizedRiskStd)
+            numAnnualizedVol3m.add(annualizedVol3m)
+            numAnnualizedVol1y.add(annualizedVol1y)
+
+        self.reportRetVolatility(msRetId, msManagerObjId, msStrategyId, nObjType, numDailyRiskStd, numDailyVol3m, numDailyVol1y, numAnnualizedRiskStd, numAnnualizedVol3m, numAnnualizedVol1y )
+
+    def reportRetVolatility(self, msRetId, msManagerObjId, msStrategyId, nObjType, numDailyRiskStd, numDailyVol3m, numDailyVol1y, numAnnualizedRiskStd, numAnnualizedVol3m, numAnnualizedVol1y ) :
+
+        ws = self.wb.add_worksheet('retStReturnsVolatility')
+        ws.hide_gridlines(2)
+        ws.write('A1', ' Check missing rate of Return Id, ManagerObjId and Strategy Id ')
+        ws.write('B2', 'retId')
+        ws.write('C2', 'managerObjId')
+        ws.write('D2', 'strategyId')
+        ws.write('A3', 'Missing')
+        ws.write('B3', msRetId)
+        ws.write('C3', msManagerObjId)
+        ws.write('D3', msStrategyId)
+
+        ws.write('A6', 'Check frequency of each Obj Type')
+        row = 8
+        ws.write(row-1, 1, 'Categoty')
+        ws.write(row-1, 2, 'frequency')
+        ws.write(row, 0, 'objType')
+        for i in nObjType:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nObjType[i])
+            row += 1
+
+        ws.write(row +1 ,0, 'Check missing rate and general statistics for each numeric fields')
+        ws.write_column(row+2 , 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row+2 , 1, ['dailyRiskStd'] + numDailyRiskStd.out())
+        ws.write_column(row+2 , 2, ['dailyVol3m'] + numDailyVol3m.out())
+        ws.write_column(row+2 , 3, ['dailyVol1y'] + numDailyVol1y.out())
+        ws.write_column(row+2 , 1, ['annualizedRiskStd'] + numAnnualizedRiskStd.out())
+        ws.write_column(row+2 , 2, ['annualizedVol3m'] + numAnnualizedVol3m.out())
+        ws.write_column(row+2 , 3, ['annualizedVol1y'] + numAnnualizedVol1y.out())
+
+        #self.formatset(ws)
+
+
+    def checkRetReturnsGrowth(self):
+        retReturnsGrowthFile = ''.join([self.oDir, '/', retStReturnsGrowth])
+
+        msRetId = 0
+
+        numGrowth1000 = Numeric()
+        numDrawdown = Numeric()
+
+        #Read files and variables
+        for line in readFile(retReturnsGrowthFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            retId = words[1]
+            growth1000 = words[2]
+            drawdown = words[3]
+            processedTimestamp = words[4]
+
+            ##### check missing rate for ret Id #####
+            if retId.strip() == '':
+                msRetId += 1
+
+            #if id not in self.retIdList:
+            #    continue
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numGrowth1000.add(growth1000)
+            numDrawdown.add(drawdown)
+
+        self.reportRetRetunsGrowth(msRetId, numGrowth1000, numDrawdown)
+
+    def reportRetRetunsGrowth(self, msRetId, numGrowth1000, numDrawdown) :
+
+        ws = self.wb.add_worksheet('retSTReturnsGrowth')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retSTReturnsAvgCorrVol'
+        ws.write('B1', 'retId')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msRetId)
+
+        row = 3
+
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['growth1000'] + numGrowth1000.out())
+        ws.write_column(row + 2, 2, ['drawdown'] + numDrawdown.out())
+
+
+    def checkRetReturnsMeanVar(self):
+        retReturnsMeanVarFile = ''.join([self.oDir, '/', retStReturnsMeanVar])
+
+        msDate = 0
+        msFund = 0
+        msIdx = 0
+
+        numWeight = Numeric()
+
+        nFund = {}
+        nIdx = {}
+        nDate = {}
+        nN = {}
+
+        #Read files and variables
+        for line in readFile(retReturnsMeanVarFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            description = words[1]
+            date = words[2]
+            fund = words[3]
+            idx = words[4]
+            weight = words[5]
+            n = words[6]
+
+            ##### check missing rate for date, fund, idx #####
+            if date.strip() == '':
+                msDate += 1
+            if fund.strip() == '':
+                msFund += 1
+            if idx.strip() == '':
+                msIdx += 1
+
+            #if id not in self.retIdList:
+            #    continue
+
+            ##### Check # of records in each fund, inx, date, n #####
+            if fund not in nFund :
+                nFund[fund] = 1
+            else :
+                nFund[fund] += 1
+
+            if idx not in nIdx :
+                nIdx[idx] = 1
+            else :
+                nIdx[idx] += 1
+
+            if date not in nDate :
+                nDate[date] = 1
+            else :
+                nDate[date] += 1
+
+            if n not in nN :
+                nN[n] = 1
+            else :
+                nN[n] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numWeight.add(weight)
+
+        self.reportRetRetunMeanVar(msDate, msFund, msIdx, nFund, nIdx, nDate, nN, numWeight)
+
+    def reportRetRetunMeanVar(self, msDate, msFund, msIdx, nFund, nIdx, nDate, nN, numWeight) :
+
+        ws = self.wb.add_worksheet('retSTReturnsMeanVar')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retSTReturnsAvgCorrVol'
+        ws.write('B1', 'date')
+        ws.write('C1', 'fund')
+        ws.write('D1', 'idx')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msDate)
+        ws.write('C2', msFund)
+        ws.write('D2', msIdx)
+
+        row = 3
+
+        ws.write(row, 1, 'Category')
+        ws.write(row, 2, 'Frequency')
+        row = row + 1
+        ws.write(row, 0, 'Fund')
+        for i in nFund:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nFund[i])
+            row += 1
+        ws.write(row, 0, 'Idx')
+        for i in nIdx:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nIdx[i])
+            row += 1
+        ws.write(row, 0, 'Date')
+        for i in nDate:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nDate[i])
+            row += 1
+        ws.write(row, 0, 'N')
+        for i in nN:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nN[i])
+            row += 1
+
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['weight'] + numWeight.out())
+
+    def checkRetReturnsPrinComp(self):
+        retReturnsPrinCompFile = ''.join([self.oDir, '/', retStReturnsPrinComp])
+
+        msDate = 0
+        msFund = 0
+        msIdx = 0
+
+        numPdi = Numeric()
+        numPdiMarg = Numeric()
+        numPc1 = Numeric()
+        numPc2 = Numeric()
+        numPc3 = Numeric()
+        numPc4 = Numeric()
+        numPc5 = Numeric()
+        numV1 = Numeric()
+        numV2 = Numeric()
+        numV3 = Numeric()
+        numV4 = Numeric()
+        numV5 = Numeric()
+
+        nFund = {}
+        nIdx = {}
+        nDate = {}
+
+        #Read file and variables
+        for line in readFile(retReturnsPrinCompFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            description = words[1]
+            date = words[2]
+            fund = words[3]
+            idx = words[4]
+            pdi = words[5]
+            pdiMarg = words[6]
+            pc1 = words[7]
+            pc2 = words[8]
+            pc3 = words[9]
+            pc4 = words[10]
+            pc5 = words[11]
+            v1 = words[12]
+            v2 = words[13]
+            v3 = words[14]
+            v4 = words[15]
+            v5 = words[16]
+
+            ##### check missing rate for date, fund and idx #####
+            if date.strip() == '':
+                msDate += 1
+            if fund.strip() == '':
+                msFund += 1
+            if idx.strip() == '':
+                msIdx += 1
+
+            #if id not in self.retIdList:
+            #    continue
+
+            ##### Check # of records in each fund, index, date #####
+            if fund not in nFund :
+                nFund[fund] = 1
+            else :
+                nFund[fund] += 1
+
+            if idx not in nIdx :
+                nIdx[idx] = 1
+            else :
+                nIdx[idx] += 1
+
+            if date not in nDate :
+                nDate[date] = 1
+            else :
+                nDate[date] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numPdi.add(pdi)
+            numPdiMarg.add(pdiMarg)
+            numPc1.add(pc1)
+            numPc2.add(pc2)
+            numPc3.add(pc3)
+            numPc4.add(pc4)
+            numPc5.add(pc5)
+            numV1.add(v1)
+            numV2.add(v2)
+            numV3.add(v3)
+            numV4.add(v4)
+            numV5.add(v5)
+
+        self.reportRetReturnsPrinComp(msDate, msFund, msIdx, nFund, nIdx, nDate, numPdi, numPdiMarg, numPc1, numPc2, numPc3, numPc4, numPc5,numV1, numV2, numV3, numV4, numV5)
+
+    def reportRetReturnsPrinComp(self, msDate, msFund, msIdx, nFund, nIdx, nDate, numPdi, numPdiMarg, numPc1, numPc2, numPc3, numPc4, numPc5,numV1, numV2, numV3, numV4, numV5) :
+
+        ws = self.wb.add_worksheet('retSTReturnsPrinComp')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retSTReturnsAvgCorrVol'
+        ws.write('B1', 'date')
+        ws.write('C1', 'fund')
+        ws.write('D1', 'idx')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msDate)
+        ws.write('C2', msFund)
+        ws.write('D2', msIdx)
+
+        row = 3
+
+        ws.write(row, 1, 'Category')
+        ws.write(row, 2, 'Frequency')
+        row = row + 1
+        ws.write(row, 0, 'Fund')
+        for i in nFund:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nFund[i])
+            row += 1
+        ws.write(row, 0, 'Idx')
+        for i in nIdx:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nIdx[i])
+            row += 1
+        ws.write(row, 0, 'Date')
+        for i in nDate:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nDate[i])
+            row += 1
+
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['pdi'] + numPdi.out())
+        ws.write_column(row + 2, 2, ['pdiMarg'] + numPdiMarg.out())
+        ws.write_column(row + 2, 3, ['pc1'] + numPc1.out())
+        ws.write_column(row + 2, 4, ['pc2'] + numPc2.out())
+        ws.write_column(row + 2, 5, ['pc3'] + numPc2.out())
+        ws.write_column(row + 2, 6, ['pc4'] + numPc2.out())
+        ws.write_column(row + 2, 7, ['pc5'] + numPc2.out())
+        ws.write_column(row + 2, 8, ['v1'] + numPc2.out())
+        ws.write_column(row + 2, 9, ['v2'] + numPc2.out())
+        ws.write_column(row + 2, 10, ['v3'] + numPc2.out())
+        ws.write_column(row + 2, 11, ['v4'] + numPc2.out())
+        ws.write_column(row + 2, 12, ['v5'] + numPc2.out())
+
+    def checkRetReturnsRolling(self):
+        retReturnsRollingFile = ''.join([self.oDir, '/', retStReturnsRolling])
+
+        msRetId = 0
+        msWindowId = 0
+        msN = 0
+
+        numVol = Numeric()
+        numAvgRetGeom = Numeric()
+        numAvgRetArith = Numeric()
+        numRollingUp = Numeric()
+        numRollingDown = Numeric()
+        numAvgUp = Numeric()
+        numAvgDown = Numeric()
+
+        nWindowId = {}
+        nN = {}
+
+        #Read file and variables
+        for line in readFile(retReturnsRollingFile):
+            words = line.strip().split(dlm)
+            id = words[0]
+            retId = words[1]
+            windowId = words[2]
+            n = words[3]
+            vol = words[4]
+            avgRetGeom = words[5]
+            avgRetArith = words[6]
+            rollingUp = words[7]
+            rollingDown = words[8]
+            avgUp = words[9]
+            avgDown = words[10]
+
+            ##### check missing rate for pos Id and ticker Id #####
+            if retId.strip() == '':
+                msRetId += 1
+            if windowId.strip() == '':
+                msWindowId += 1
+            if n.strip() == '':
+                msN += 1
+
+            #if id not in self.retIdList:
+            #    continue
+
+            ##### Check # of records in each window and n #####
+            if windowId not in nWindowId :
+                nWindowId[windowId] = 1
+            else :
+                nWindowId[windowId] += 1
+
+            if n not in nN :
+                nN[n] = 1
+            else :
+                nN[n] += 1
+
+            ##### Check missing rate and general statistics for each numerical fields #####
+            numVol.add(vol)
+            numAvgRetGeom.add(avgRetGeom)
+            numAvgRetArith.add(avgRetArith)
+            numRollingUp.add(rollingUp)
+            numRollingDown.add(rollingDown)
+            numAvgUp.add(avgUp)
+            numAvgDown.add(avgDown)
+
+        self.reportRetReturnsRolling(msRetId, msWindowId, msN, nWindowId, nN, numVol, numAvgRetGeom, numAvgRetArith, numRollingUp, numRollingDown, numAvgUp, numAvgDown)
+
+    def reportRetReturnsRolling(self, msRetId, msWindowId, msN, nWindowId, nN, numVol, numAvgRetGeom, numAvgRetArith, numRollingUp, numRollingDown, numAvgUp, numAvgDown) :
+
+        ws = self.wb.add_worksheet('retSTReturnsRolling')
+        ws.hide_gridlines(2)
+        #ws = self.wb.create_sheet()
+        #ws.title = 'retSTReturnsAvgCorrVol'
+        ws.write('B1', 'retId')
+        ws.write('C1', 'windowId')
+        ws.write('D1', 'n')
+        ws.write('A2', 'Missing Rate')
+        ws.write('B2', msRetId)
+        ws.write('C2', msWindowId)
+        ws.write('D2', msN)
+
+        row = 3
+
+        ws.write(row, 1, 'Category')
+        ws.write(row, 2, 'Frequency')
+        row = row + 1
+        ws.write(row, 0, 'WindowId')
+        for i in nWindowId:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nWindowId[i])
+            row += 1
+        ws.write(row, 0, 'n')
+        for i in nN:
+            ws.write(row, 1, i)
+            ws.write(row, 2, nN[i])
+            row += 1
+
+        ws.write_column(row + 2, 0, ['', 'missing rate', 'max', 'min', 'avg'])
+        ws.write_column(row + 2, 1, ['vol'] + numVol.out())
+        ws.write_column(row + 2, 2, ['avgRetGeom'] + numAvgRetGeom.out())
+        ws.write_column(row + 2, 3, ['avgRetArith'] + numAvgRetArith.out())
+        ws.write_column(row + 2, 4, ['rollingUp'] + numRollingUp.out())
+        ws.write_column(row + 2, 5, ['rollingDown'] + numRollingDown.out())
+        ws.write_column(row + 2, 6, ['avgUp'] + numAvgUp.out())
+        ws.write_column(row + 2, 7, ['avgDown'] + numAvgDown.out())
+
+
+    def formatset(self, ws) :
+
+        r = 0
+
+        while True:
+            col = 0
+            if (ws.cell(row = r + 1, column = col + 1).value == None and ws.cell(row = r, column = col + 1).value == None and ws.cell(row = r + 1, column = col).value == None):
+                break
+
+            for col in range(0, ws.get_highest_column() + 1) :
+                if (ws.cell(row = r + 1, column = col + 1).value == None and ws.cell(row = r, column = col + 1).value == None and ws.cell(row = r + 1, column = col).value == None):
+                    break
+            col = col - 1
+
+            for row in range(r, ws.get_highest_row() + 1) :
+                if (ws.cell(row = row + 1, column = col + 1).value == None and ws.cell(row = row, column = col + 1).value == None and ws.cell(row = row + 1, column = col).value == None):
+                    break
+
+            print row, col
+
+            formtype = 0
+            while True :
+                if (ws.cell(row = r, column = formtype).value == None) :
+                    formtype = formtype + 1
+                else :
+                    break
+            print formtype
+
+            for rowlist in range(r, row + 1) :
+                for colist in range(0, col + 1) :
+                    print rowlist, colist
+                    if (ws.cell(row = rowlist, column = 1).value is not None and ws.cell(row = rowlist + 1, column = 0).value == None and ws.cell(row = rowlist + 1, column = 1).value is not None) :
+                        ws.merge_cells(start_row = rowlist, start_column = 0, end_row = rowlist + 1, end_column = 0)
+                    if (colist == 0) :
+                        ws.cell(row = rowlist, column = 0).style.alignment.horizontal = 'center'
+                        ws.cell(row = rowlist, column = 0).style.alignment.vertial = 'center'
+                    if (rowlist == r) :
+                        ws.cell(row = rowlist, column = colist).style.borders.top.border_style = 'thin'
+                        ws.cell(row = rowlist, column = colist).style.borders.bottom.border_style = 'thin'
+                        ws.cell(row = rowlist, column = colist).style.fill.fill_type = Fill.FILL_SOLID
+                        ws.cell(row = rowlist, column = colist).style.fill.start_color.index = Color.BLUE
+                        ws.cell(row = rowlist, column = colist).style.alignment.horizontal = 'center'
+                        ws.cell(row = rowlist, column = colist).style.alignment.vertical = 'center'
+                    else :
+                        ws.cell(row = rowlist, column = colist).style.borders.bottom.border_style = 'dotted'
+                    if (colist == 0 or colist ==formtype) :
+                        ws.cell(row = rowlist, column = colist).style.borders.left.border_style = 'thin'
+
+                ws.cell(row = rowlist, column = col).style.borders.right.border_style = 'thin'
+
+            for colist in range(0, col + 1) :
+                ws.cell(row = rowlist , column = colist).style.borders.bottom.border_style = 'thin'
+
+            r = row + 2
+
+    #def formattable(startRow, startCol, endRow, endCol, ws) :
+     #   r = startRow
+
+      #  while col <= endCol :
+
+
+
+
+    def printTime(self, tableName, preTime) :
+        timeNow = datetime.now()
+        timedelta = timeNow - preTime
+        print tableName + ' ' + str(int(timedelta.seconds / 60)) + ' minutes ' + str(timedelta.seconds - int(timedelta.seconds / 60) * 60) + ' seconds'
+        return timeNow
+
+    def PrtMgrPortforlio(self) :
+        ws = self.wb.add_worksheet('ManagersAndPortforlios')
+        ws.hide_gridlines(2)
+        ws.write(0, 0, 'managers')
+        ws.write(0, 1, 'portfolios')
+        mgr = []
+        pfl = []
+        for i in self.managers:
+            managerId = i
+            mgr.append(self.objMap[managerId])
+        for i in self.portfolios:
+            portfolioId = i
+            pfl.append(self.objMap[portfolioId])
+        ws.write_column(1, 0, mgr)
+        ws.write_column(1, 1, pfl)
+
+    def checkTables(self):
+
+        self.loadObjects()
+        time0 = datetime.now()
+
+        #self.generatePosIdList()
+        #time1 = self.printTime('PosIdList', time0)
+        #self.checkPosAllocation()
+        #time2 = self.printTime('PosAllocation', time1)
+        #self.checkPosAssetClassOverview()
+        #time3 = self.printTime('PosAssetClassOverview', time2)
+        #self.checkPosAttribution()
+        #time4 = self.printTime('PosAttribution', time3)
+
+        #self.checkPosAttributionIntegrated()
+        #time5 = self.printTime('PosAttributionIntegrated', time4)
+        #self.checkPosContribution()
+        #time6 = self.printTime('PosContribution', time5)
+        #self.checkPosDecileCharts()
+        #time7 = self.printTime('PosDecileCharts', time6)
+        #self.checkPosHistorical()
+        #time8 = self.printTime('PosHistorical', time7)
+
+        #self.checkPosLookback()
+        #time9 = self.printTime('PosLookback', time8)
+        #self.checkPosPortSummaryOverview()
+        #time10 = self.printTime('PosPortSummaryOverview', time1)
+        #self.checkPosPortSummaryCharts()
+        #time11 = self.printTime('PosPortSummaryCharts', time10)
+        #self.checkPosOffsetOverlapManagers()
+        #time12 = self.printTime('PosOffsetOverlapManagers', time11)
+
+        #self.checkPosOffsetOverlapOverlap()
+        #time13 = self.printTime('PosOffsetOverlapOverlap', time12)
+        #self.checkPosOffsetOverlapProxies()
+        #time14 = self.printTime('PosOffsetOverlapProxies', time13)
+        #self.checkPosOffsetOverlapSummary()
+        #time15 = self.printTime('PosOffsetOverlapSummary', time14)
+        #self.checkPosOffsetOverlapTickers()
+        #time16 = self.printTime('PosOffsetOverlapTickers', time15)
+
+        #self.checkPosPortSummaryTopStocks()
+        #time17 = self.printTime('PosPortsSummaryTopStocks', time16)
+        #self.checkPosVaR()
+        #time18 = self.printTime('PosVaR', time17)
+        #self.checkPosScenarios()
+        #time19 = self.printTime('PosScenarios', time18)
+        #self.checkPosLookbackHistorical()
+        #time20 = self.printTime('PosLookbackHistorical', time19)
+
+        #self.generateRetIdList()
+        #time21 = self.printTime('generateRetIdList', time10)
+        #self.checkRetMarketsImpliedCorr()
+        #time22 = self.printTime('RetMarketsImpliedCorr', time21)
+        #self.checkRetMarketsRelDispersion()
+        #time23 = self.printTime('RetMarketsRelDispersion', time22)
+        #self.checkRetReturnsAvgCorrVol()
+        #time24 = self.printTime('RetReturnsAvgCorrVol', time23)
+
+        #self.checkRetStressCorr()
+        #time25 = self.printTime('RetStressCorr', time24)
+        #self.checkRetStats()
+        #time26 = self.printTime('RetStats', time25)
+        #self.checkRetBetasCorrelations()
+        #time27 = self.printTime('RetBetasCorrelation', time26)
+        #self.checkRetVolatility()
+        #time28 = self.printTime('RetVolatility', time27)
+
+        #self.checkRetReturnsGrowth()
+        #time29 = self.printTime('RetReturnsGrowth', time28)
+        #self.checkRetReturnsMeanVar()
+        #time30 = self.printTime('RetReturnsMeanVar', time29)
+        #self.checkRetReturnsPrinComp()
+        #time31 = self.printTime('RetReturnsPrinComp', time30)
+        #self.checkRetReturnsRolling()
+        #time32 = self.printTime('RetReturnsRolling', time31)
+
+        self.PrtMgrPortforlio()
+        self.wb.close()
+
+    def process(self):
+        self.parseArgv()
+        self.generateDate()
+        self.checkTables()
+
+
+def main(argv):
+    instQA = QA(argv)
+    instQA.process()
+
+if __name__ == '__main__':
+    main(sys.argv)
+
+
